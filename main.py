@@ -256,6 +256,18 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
     section.top_margin = Cm(1.5)
     section.bottom_margin = Cm(1.5)
 
+    # Voorblad krijgt geen kop-logo (daar staat al een groot logo in de tekst zelf).
+    # Vanaf pagina 2 verschijnt automatisch het kleine logo rechtsboven.
+    section.different_first_page_header_footer = True
+    if os.path.exists(REFURNITY_LOGO_PATH):
+        header = section.header
+        hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+        hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        hrun = hp.add_run()
+        hrun.add_picture(REFURNITY_LOGO_PATH, width=Cm(2))
+        # lege first-page header, zodat het voorblad zelf geen kop-logo krijgt
+        section.first_page_header.paragraphs[0].text = ""
+
     # --- Voorblad ---
     if data.klant and data.klant.logo_base64:
         try:
@@ -263,7 +275,7 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
             p = doc.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             run = p.add_run()
-            run.add_picture(_io.BytesIO(logo_bytes), width=Cm(5))
+            run.add_picture(_io.BytesIO(logo_bytes), width=Cm(8))
         except Exception:
             pass  # kapotte/ontbrekende logo-data mag de generatie niet laten crashen
 
@@ -284,13 +296,13 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
             _set_font(run3, size=10)
 
     # ReFurnity-logo en -adres, groot en gecentreerd, alleen op het voorblad
-    for _ in range(6):
+    for _ in range(4):
         doc.add_paragraph()
     if os.path.exists(REFURNITY_LOGO_PATH):
         p = doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = p.add_run()
-        run.add_picture(REFURNITY_LOGO_PATH, width=Cm(6))
+        run.add_picture(REFURNITY_LOGO_PATH, width=Cm(9))
         doc.add_paragraph()
     for line in REFURNITY_ADDRESS_LINES:
         p = doc.add_paragraph()
