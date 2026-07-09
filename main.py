@@ -256,14 +256,6 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
     section.top_margin = Cm(1.5)
     section.bottom_margin = Cm(1.5)
 
-    # Vaste paginakop: klein ReFurnity-logo rechtsboven, herhaalt automatisch op elke pagina
-    if os.path.exists(REFURNITY_LOGO_PATH):
-        header = section.header
-        hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
-        hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        hrun = hp.add_run()
-        hrun.add_picture(REFURNITY_LOGO_PATH, width=Cm(2))
-
     # --- Voorblad ---
     if data.klant and data.klant.logo_base64:
         try:
@@ -291,8 +283,14 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
             run3 = p3.add_run(data.klant.contact)
             _set_font(run3, size=10)
 
-    # ReFurnity-adres hoort ook op het voorblad, onderaan dat eerste blok
+    # ReFurnity-logo en -adres, groot en gecentreerd, alleen op het voorblad
     for _ in range(6):
+        doc.add_paragraph()
+    if os.path.exists(REFURNITY_LOGO_PATH):
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run()
+        run.add_picture(REFURNITY_LOGO_PATH, width=Cm(6))
         doc.add_paragraph()
     for line in REFURNITY_ADDRESS_LINES:
         p = doc.add_paragraph()
