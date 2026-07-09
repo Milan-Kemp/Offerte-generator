@@ -169,6 +169,7 @@ async def health():
 # ---------------------------------------------------------------------------
 
 import io as _io
+import os
 import base64
 from typing import Optional, List
 from pydantic import BaseModel
@@ -184,6 +185,14 @@ FONT_NAME = "Calibri"
 HEADER_BG = "2F5233"
 SHADE_BG = "F2F2F2"
 TOTAL_BG = "E4E4E4"
+REFURNITY_LOGO_PATH = os.path.join(os.path.dirname(__file__), "refurnity_logo.png")
+REFURNITY_ADDRESS_LINES = [
+    "Refurnity BV",
+    "Bergerweg 6, 6085 AT Horn",
+    "Telefoon 0621502536",
+    "Mail info@ReFurnity.nl",
+    "www.ReFurnity.nl",
+]
 
 
 class Regel(BaseModel):
@@ -365,6 +374,31 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
             run = p.add_run(note)
             _set_font(run, size=9, color="555555")
             run.italic = True
+
+    # Vaste ReFurnity-voettekst, ongeacht welke klant/partner het is
+    doc.add_paragraph()
+    hr = doc.add_paragraph()
+    hr.paragraph_format.space_before = Pt(6)
+    hr.paragraph_format.space_after = Pt(6)
+    pPr = hr._p.get_or_add_pPr()
+    pBdr = OxmlElement("w:pBdr")
+    top = OxmlElement("w:top")
+    top.set(qn("w:val"), "single")
+    top.set(qn("w:sz"), "6")
+    top.set(qn("w:space"), "1")
+    top.set(qn("w:color"), "8DC63F")
+    pBdr.append(top)
+    pPr.append(pBdr)
+
+    if os.path.exists(REFURNITY_LOGO_PATH):
+        p = doc.add_paragraph()
+        run = p.add_run()
+        run.add_picture(REFURNITY_LOGO_PATH, width=Cm(3))
+
+    for line in REFURNITY_ADDRESS_LINES:
+        p = doc.add_paragraph()
+        run = p.add_run(line)
+        _set_font(run, size=8, color="666666")
 
     buf = _io.BytesIO()
     doc.save(buf)
