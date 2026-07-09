@@ -256,13 +256,22 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
     section.top_margin = Cm(1.5)
     section.bottom_margin = Cm(1.5)
 
+    # Vaste paginakop: klein ReFurnity-logo rechtsboven, herhaalt automatisch op elke pagina
+    if os.path.exists(REFURNITY_LOGO_PATH):
+        header = section.header
+        hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+        hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        hrun = hp.add_run()
+        hrun.add_picture(REFURNITY_LOGO_PATH, width=Cm(2))
+
+    # --- Voorblad ---
     if data.klant and data.klant.logo_base64:
         try:
             logo_bytes = base64.b64decode(data.klant.logo_base64)
             p = doc.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             run = p.add_run()
-            run.add_picture(_io.BytesIO(logo_bytes), width=Cm(4))
+            run.add_picture(_io.BytesIO(logo_bytes), width=Cm(5))
         except Exception:
             pass  # kapotte/ontbrekende logo-data mag de generatie niet laten crashen
 
@@ -270,7 +279,7 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
         p = doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = p.add_run(f"Offerte voor {data.klant.naam}")
-        _set_font(run, size=16, bold=True)
+        _set_font(run, size=18, bold=True)
         if data.klant.adres:
             p2 = doc.add_paragraph()
             p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -282,6 +291,18 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
             run3 = p3.add_run(data.klant.contact)
             _set_font(run3, size=10)
 
+    # ReFurnity-adres hoort ook op het voorblad, onderaan dat eerste blok
+    for _ in range(6):
+        doc.add_paragraph()
+    for line in REFURNITY_ADDRESS_LINES:
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run(line)
+        _set_font(run, size=9, color="666666")
+
+    doc.add_page_break()
+
+    # --- Inhoudspagina ---
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     run = title.add_run("Offerte")
@@ -374,31 +395,6 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
             run = p.add_run(note)
             _set_font(run, size=9, color="555555")
             run.italic = True
-
-    # Vaste ReFurnity-voettekst, ongeacht welke klant/partner het is
-    doc.add_paragraph()
-    hr = doc.add_paragraph()
-    hr.paragraph_format.space_before = Pt(6)
-    hr.paragraph_format.space_after = Pt(6)
-    pPr = hr._p.get_or_add_pPr()
-    pBdr = OxmlElement("w:pBdr")
-    top = OxmlElement("w:top")
-    top.set(qn("w:val"), "single")
-    top.set(qn("w:sz"), "6")
-    top.set(qn("w:space"), "1")
-    top.set(qn("w:color"), "8DC63F")
-    pBdr.append(top)
-    pPr.append(pBdr)
-
-    if os.path.exists(REFURNITY_LOGO_PATH):
-        p = doc.add_paragraph()
-        run = p.add_run()
-        run.add_picture(REFURNITY_LOGO_PATH, width=Cm(3))
-
-    for line in REFURNITY_ADDRESS_LINES:
-        p = doc.add_paragraph()
-        run = p.add_run(line)
-        _set_font(run, size=8, color="666666")
 
     buf = _io.BytesIO()
     doc.save(buf)
