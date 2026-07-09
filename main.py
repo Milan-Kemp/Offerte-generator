@@ -116,6 +116,7 @@ async def health():
 # ---------------------------------------------------------------------------
 
 import io as _io
+import base64
 from typing import Optional, List
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
@@ -147,6 +148,7 @@ class Klant(BaseModel):
     naam: Optional[str] = None
     adres: Optional[str] = None
     contact: Optional[str] = None
+    logo_base64: Optional[str] = None  # ruwe base64, zonder data:-prefix
 
 
 class GenerateRequest(BaseModel):
@@ -192,10 +194,31 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
     section.top_margin = Cm(1.5)
     section.bottom_margin = Cm(1.5)
 
+    if data.klant and data.klant.logo_base64:
+        try:
+            logo_bytes = base64.b64decode(data.klant.logo_base64)
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run()
+            run.add_picture(_io.BytesIO(logo_bytes), width=Cm(4))
+        except Exception:
+            pass  # kapotte/ontbrekende logo-data mag de generatie niet laten crashen
+
     if data.klant and data.klant.naam:
         p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = p.add_run(f"Offerte voor {data.klant.naam}")
         _set_font(run, size=16, bold=True)
+        if data.klant.adres:
+            p2 = doc.add_paragraph()
+            p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run2 = p2.add_run(data.klant.adres)
+            _set_font(run2, size=10)
+        if data.klant.contact:
+            p3 = doc.add_paragraph()
+            p3.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run3 = p3.add_run(data.klant.contact)
+            _set_font(run3, size=10)
 
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
