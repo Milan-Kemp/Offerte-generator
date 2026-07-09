@@ -264,7 +264,7 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
         hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
         hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
         hrun = hp.add_run()
-        hrun.add_picture(REFURNITY_LOGO_PATH, width=Cm(2))
+        hrun.add_picture(REFURNITY_LOGO_PATH, width=Cm(2.8))
         # lege first-page header, zodat het voorblad zelf geen kop-logo krijgt
         section.first_page_header.paragraphs[0].text = ""
 
@@ -275,7 +275,7 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
             p = doc.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             run = p.add_run()
-            run.add_picture(_io.BytesIO(logo_bytes), width=Cm(8))
+            run.add_picture(_io.BytesIO(logo_bytes), width=Cm(6))
         except Exception:
             pass  # kapotte/ontbrekende logo-data mag de generatie niet laten crashen
 
@@ -296,14 +296,12 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
             _set_font(run3, size=10)
 
     # ReFurnity-logo en -adres, groot en gecentreerd, alleen op het voorblad
-    for _ in range(4):
-        doc.add_paragraph()
+    doc.add_paragraph()
     if os.path.exists(REFURNITY_LOGO_PATH):
         p = doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = p.add_run()
-        run.add_picture(REFURNITY_LOGO_PATH, width=Cm(9))
-        doc.add_paragraph()
+        run.add_picture(REFURNITY_LOGO_PATH, width=Cm(7))
     for line in REFURNITY_ADDRESS_LINES:
         p = doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
