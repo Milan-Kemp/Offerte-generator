@@ -30,10 +30,58 @@ Endpoint:
 """
 
 import io
+import zipfile
+import base64
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from docx import Document
 
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+
 app = FastAPI(title="Offerte docx-extractie service")
+
+MIN_IMAGE_DIMENSION = 60      # kleinere afbeeldingen (bullets, iconen) worden overgeslagen
+THUMBNAIL_MAX_WIDTH = 400     # basis64-thumbnails blijven klein, geen volledige resolutie nodig voor een keuzelijst
+MAX_IMAGES_RETURNED = 8
+
+
+def extract_embedded_images(file_bytes):
+    """Haal alle ingebedde afbeeldingen uit een docx (via word/media/), zodat de
+    gebruiker er zelf een logo uit kan kiezen in plaats van dat het systeem raadt
+    welke afbeelding de logo is. Slaat te kleine afbeeldingen (iconen, bullets) over."""
+    images = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+            media_files = sorted(n for n in z.namelist() if n.startswith("word/media/"))
+            for name in media_files:
+                if len(images) >= MAX_IMAGES_RETURNED:
+                    break
+                raw = z.read(name)
+                if Image is None:
+                    continue
+                try:
+                    img = Image.open(io.BytesIO(raw))
+                    w, h = img.size
+                except Exception:
+                    continue
+                if w < MIN_IMAGE_DIMENSION or h < MIN_IMAGE_DIMENSION:
+                    continue
+                if w > THUMBNAIL_MAX_WIDTH:
+                    ratio = THUMBNAIL_MAX_WIDTH / w
+                    img = img.convert("RGB").resize((THUMBNAIL_MAX_WIDTH, int(h * ratio)))
+                buf = io.BytesIO()
+                img.convert("RGB").save(buf, format="JPEG", quality=80)
+                images.append({
+                    "filename": name.rsplit("/", 1)[-1],
+                    "width": w,
+                    "height": h,
+                    "thumbnail_base64": base64.b64encode(buf.getvalue()).decode(),
+                })
+    except zipfile.BadZipFile:
+        pass
+    return images
 
 
 def dedupe_row_cells(row):
@@ -98,10 +146,15 @@ async def extract_docx(file: UploadFile = File(...)):
     if not raw_text.strip():
         warnings.append("Geen bruikbare tekst gevonden in het hele document.")
 
+    images = extract_embedded_images(content)
+    if not images:
+        warnings.append("Geen (bruikbare) afbeeldingen gevonden om als logo te kiezen.")
+
     return {
         "raw_text": raw_text,
         "tables_found": len(doc.tables),
         "tables_used": tables_used,
+        "images": images,
         "warnings": warnings,
     }
 
