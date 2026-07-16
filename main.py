@@ -447,8 +447,15 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
         p = doc.add_paragraph()
         run = p.add_run("Betaaltermijnen")
         _set_font(run, size=11, bold=True)
-        for termijn in data.aanbetaling_termijnen:
-            bedrag = eindtotaal * (termijn.percentage / 100)
+        termijnen = data.aanbetaling_termijnen
+        lopend_totaal = 0.0
+        for idx, termijn in enumerate(termijnen):
+            if idx == len(termijnen) - 1:
+                # laatste termijn = restbedrag, zodat de som altijd exact klopt
+                bedrag = round(eindtotaal - lopend_totaal, 2)
+            else:
+                bedrag = round(eindtotaal * (termijn.percentage / 100), 2)
+                lopend_totaal += bedrag
             p = doc.add_paragraph()
             run = p.add_run(f"{termijn.label}: {termijn.percentage:g}% = {_money(bedrag)}")
             _set_font(run, size=10)
