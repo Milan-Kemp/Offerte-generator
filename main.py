@@ -429,3 +429,54 @@ async def generate_docx(data: GenerateRequest):
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+import subprocess
+import tempfile
+import uuid
+
+
+def convert_docx_to_pdf(docx_bytes: bytes) -> bytes:
+    """Converteer docx-bytes naar pdf-bytes via headless LibreOffice.
+    Elke aanroep gebruikt een eigen tijdelijke map, zodat gelijktijdige
+    requests elkaar niet in de weg zitten."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        docx_path = os.path.join(tmpdir, f"{uuid.uuid4().hex}.docx")
+        with open(docx_path, "wb") as f:
+            f.write(docx_bytes)
+
+        result = subprocess.run(
+            [
+                "soffice", "--headless", "--norestore",
+                "--convert-to", "pdf", "--outdir", tmpdir, docx_path,
+            ],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"LibreOffice-conversie mislukt: {result.stderr}")
+
+        pdf_path = docx_path.rsplit(".", 1)[0] + ".pdf"
+        if not os.path.exists(pdf_path):
+            raise RuntimeError(f"Geen PDF geproduceerd. stdout: {result.stdout}, stderr: {result.stderr}")
+
+        with open(pdf_path, "rb") as f:
+            return f.read()
+
+
+@app.post("/generate-pdf")
+async def generate_pdf(data: GenerateRequest):
+    builder = TEMPLATE_BUILDERS.get(data.template or "1")
+    if builder is None:
+        raise HTTPException(status_code=400, detail=f"Onbekend template: {data.template}")
+
+    docx_bytes = builder(data)
+    try:
+        pdf_bytes = convert_docx_to_pdf(docx_bytes)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return StreamingResponse(
+        _io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="offerte.pdf"'},
+    )
