@@ -204,6 +204,7 @@ class Regel(BaseModel):
     totaal: float
     waarschuwing: Optional[str] = None
     opmerking: Optional[str] = None
+    foto_base64: Optional[str] = None  # optionele productfoto, ruwe base64 zonder data:-prefix
 
 
 class Klant(BaseModel):
@@ -213,11 +214,19 @@ class Klant(BaseModel):
     logo_base64: Optional[str] = None  # ruwe base64, zonder data:-prefix
 
 
+class AanbetalingTermijn(BaseModel):
+    label: str
+    percentage: float  # bijv. 50 voor 50%
+
+
 class GenerateRequest(BaseModel):
     regels: List[Regel]
     algemene_opmerkingen: Optional[List[str]] = []
     klant: Optional[Klant] = None
     template: Optional[str] = "1"
+    toeslag_percentage: Optional[float] = None  # bijv. 20 voor 20% opslag op het leveranciersbedrag
+    btw_percentage: Optional[float] = 21  # standaard 21%, zet expliciet op 0 om BTW-regel weg te laten
+    aanbetaling_termijnen: Optional[List[AanbetalingTermijn]] = None
 
 
 def _shade_cell(cell, color_hex):
@@ -344,6 +353,15 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
         run = p.add_run(regel.item)
         _set_font(run, bold=True)
 
+        if regel.foto_base64:
+            try:
+                foto_bytes = base64.b64decode(regel.foto_base64)
+                fp = row.cells[0].add_paragraph()
+                frun = fp.add_run()
+                frun.add_picture(_io.BytesIO(foto_bytes), width=Cm(2.8))
+            except Exception:
+                pass  # kapotte fotodata mag de generatie niet laten crashen
+
         cell1 = row.cells[1]
         cell1.paragraphs[0].text = ""
         first = True
@@ -383,18 +401,57 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
 
         grand_total += regel.totaal
 
-    total_row = table.add_row()
-    total_row.cells[0].merge(total_row.cells[3])
-    _shade_cell(total_row.cells[0], TOTAL_BG)
-    _shade_cell(total_row.cells[4], TOTAL_BG)
-    p = total_row.cells[0].paragraphs[0]
-    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    run = p.add_run("TOTAAL")
-    _set_font(run, size=11, bold=True)
-    p = total_row.cells[4].paragraphs[0]
-    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    run = p.add_run(_money(grand_total))
-    _set_font(run, size=11, bold=True)
+    def _add_summary_row(label, bedrag, bold=True, shade_bg=None):
+        row = table.add_row()
+        row.cells[0].merge(row.cells[3])
+        if shade_bg:
+            _shade_cell(row.cells[0], shade_bg)
+            _shade_cell(row.cells[4], shade_bg)
+        p = row.cells[0].paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        run = p.add_run(label)
+        _set_font(run, size=11 if bold else 10, bold=bold)
+        p = row.cells[4].paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        run = p.add_run(_money(bedrag))
+        _set_font(run, size=11 if bold else 10, bold=bold)
+
+    subtotaal = grand_total
+    heeft_toeslag = bool(data.toeslag_percentage)
+    heeft_btw = bool(data.btw_percentage)
+
+    if not heeft_toeslag and not heeft_btw:
+        _add_summary_row("TOTAAL", subtotaal, shade_bg=TOTAL_BG)
+        eindtotaal = subtotaal
+    else:
+        if heeft_toeslag:
+            _add_summary_row("Subtotaal", subtotaal, bold=False)
+            toeslag_bedrag = subtotaal * (data.toeslag_percentage / 100)
+            _add_summary_row(f"Toeslag ({data.toeslag_percentage:g}%)", toeslag_bedrag, bold=False)
+            totaal_excl_btw = subtotaal + toeslag_bedrag
+        else:
+            totaal_excl_btw = subtotaal
+
+        if heeft_btw:
+            _add_summary_row("Totaal excl. BTW", totaal_excl_btw, bold=False)
+            btw_bedrag = totaal_excl_btw * (data.btw_percentage / 100)
+            _add_summary_row(f"BTW ({data.btw_percentage:g}%)", btw_bedrag, bold=False)
+            eindtotaal = totaal_excl_btw + btw_bedrag
+            _add_summary_row("Totaal incl. BTW", eindtotaal, shade_bg=TOTAL_BG)
+        else:
+            eindtotaal = totaal_excl_btw
+            _add_summary_row("TOTAAL", eindtotaal, shade_bg=TOTAL_BG)
+
+    if data.aanbetaling_termijnen:
+        doc.add_paragraph()
+        p = doc.add_paragraph()
+        run = p.add_run("Betaaltermijnen")
+        _set_font(run, size=11, bold=True)
+        for termijn in data.aanbetaling_termijnen:
+            bedrag = eindtotaal * (termijn.percentage / 100)
+            p = doc.add_paragraph()
+            run = p.add_run(f"{termijn.label}: {termijn.percentage:g}% = {_money(bedrag)}")
+            _set_font(run, size=10)
 
     if data.algemene_opmerkingen:
         doc.add_paragraph()
