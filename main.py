@@ -544,3 +544,202 @@ async def generate_pdf(data: GenerateRequest):
         media_type="application/pdf",
         headers={"Content-Disposition": 'attachment; filename="offerte.pdf"'},
     )
+
+
+# ---------------------------------------------------------------------------
+# Generatie: JSON -> Excel-document, met echte formules (geen losse
+# Python-berekeningen), zodat het naspeurbaar en herrekenbaar blijft in Excel.
+# ---------------------------------------------------------------------------
+
+from openpyxl import Workbook
+from openpyxl.styles import Font as XFont, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
+from openpyxl.drawing.image import Image as XLImage
+
+XFONT_NAME = "Calibri"
+XHEADER_FILL = "2F5233"
+XTOTAL_FILL = "E4E4E4"
+
+
+def build_xlsx(data: GenerateRequest) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Offerte"
+
+    col_widths = {"A": 30, "B": 40, "C": 10, "D": 14, "E": 14}
+    for col, w in col_widths.items():
+        ws.column_dimensions[col].width = w
+
+    row = 1
+    if data.klant and data.klant.naam:
+        ws.merge_cells(f"A{row}:E{row}")
+        c = ws.cell(row=row, column=1, value=f"Offerte voor {data.klant.naam}")
+        c.font = XFont(name=XFONT_NAME, size=14, bold=True)
+        c.alignment = Alignment(horizontal="center")
+        row += 1
+        if data.klant.adres:
+            ws.merge_cells(f"A{row}:E{row}")
+            c = ws.cell(row=row, column=1, value=data.klant.adres)
+            c.font = XFont(name=XFONT_NAME, size=10)
+            c.alignment = Alignment(horizontal="center")
+            row += 1
+        if data.klant.contact:
+            ws.merge_cells(f"A{row}:E{row}")
+            c = ws.cell(row=row, column=1, value=data.klant.contact)
+            c.font = XFont(name=XFONT_NAME, size=10)
+            c.alignment = Alignment(horizontal="center")
+            row += 1
+    row += 1
+
+    header_row = row
+    headers = ["Item", "Omschrijving / specificaties", "Aantal", "Prijs p.s.", "Totaal"]
+    for i, htext in enumerate(headers, start=1):
+        c = ws.cell(row=header_row, column=i, value=htext)
+        c.font = XFont(name=XFONT_NAME, size=10, bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor=XHEADER_FILL)
+    row += 1
+
+    first_item_row = row
+    for regel in data.regels:
+        omschrijving_delen = []
+        if regel.omschrijving:
+            omschrijving_delen.append(regel.omschrijving)
+        for spec in (regel.specs or []):
+            omschrijving_delen.append(f"• {spec}")
+        if regel.opmerking:
+            omschrijving_delen.append(regel.opmerking)
+
+        ws.cell(row=row, column=1, value=regel.item).font = XFont(name=XFONT_NAME, size=10, bold=True)
+        c = ws.cell(row=row, column=2, value="\n".join(omschrijving_delen))
+        c.font = XFont(name=XFONT_NAME, size=10)
+        c.alignment = Alignment(wrap_text=True, vertical="top")
+
+        if regel.aantal is not None:
+            ws.cell(row=row, column=3, value=regel.aantal).font = XFont(name=XFONT_NAME, size=10)
+        if regel.prijs_per_stuk is not None:
+            pc = ws.cell(row=row, column=4, value=regel.prijs_per_stuk)
+            pc.font = XFont(name=XFONT_NAME, size=10)
+            pc.number_format = '€ #,##0.00'
+
+        totaal_cell = ws.cell(row=row, column=5)
+        if regel.aantal is not None and regel.prijs_per_stuk is not None:
+            col_c = get_column_letter(3)
+            col_d = get_column_letter(4)
+            totaal_cell.value = f"={col_c}{row}*{col_d}{row}"
+        else:
+            totaal_cell.value = regel.totaal
+        totaal_cell.font = XFont(name=XFONT_NAME, size=10, bold=True)
+        totaal_cell.number_format = '€ #,##0.00'
+
+        if regel.foto_base64:
+            try:
+                foto_bytes = base64.b64decode(regel.foto_base64)
+                img = XLImage(_io.BytesIO(foto_bytes))
+                img.width = 90
+                img.height = 90
+                ws.add_image(img, f"A{row}")
+                ws.row_dimensions[row].height = 70
+            except Exception:
+                pass
+
+        row += 1
+    last_item_row = row - 1
+
+    row += 1
+    subtotaal_row = row
+    ws.cell(row=row, column=4, value="Subtotaal").font = XFont(name=XFONT_NAME, size=10)
+    ws.cell(row=row, column=4).alignment = Alignment(horizontal="right")
+    c = ws.cell(row=row, column=5, value=f"=SUM(E{first_item_row}:E{last_item_row})")
+    c.font = XFont(name=XFONT_NAME, size=10, bold=True)
+    c.number_format = '€ #,##0.00'
+    row += 1
+
+    excl_btw_row = None
+    if data.toeslag_percentage:
+        toeslag_row = row
+        ws.cell(row=row, column=4, value=f"Toeslag ({data.toeslag_percentage:g}%)").alignment = Alignment(horizontal="right")
+        ws.cell(row=row, column=4).font = XFont(name=XFONT_NAME, size=10)
+        c = ws.cell(row=row, column=5, value=f"=E{subtotaal_row}*{data.toeslag_percentage / 100}")
+        c.font = XFont(name=XFONT_NAME, size=10)
+        c.number_format = '€ #,##0.00'
+        row += 1
+
+        excl_btw_row = row
+        ws.cell(row=row, column=4, value="Totaal excl. BTW").alignment = Alignment(horizontal="right")
+        ws.cell(row=row, column=4).font = XFont(name=XFONT_NAME, size=10)
+        c = ws.cell(row=row, column=5, value=f"=E{subtotaal_row}+E{toeslag_row}")
+        c.font = XFont(name=XFONT_NAME, size=10)
+        c.number_format = '€ #,##0.00'
+        row += 1
+
+    basis_row = excl_btw_row or subtotaal_row
+
+    if data.btw_percentage:
+        btw_row = row
+        ws.cell(row=row, column=4, value=f"BTW ({data.btw_percentage:g}%)").alignment = Alignment(horizontal="right")
+        ws.cell(row=row, column=4).font = XFont(name=XFONT_NAME, size=10)
+        c = ws.cell(row=row, column=5, value=f"=E{basis_row}*{data.btw_percentage / 100}")
+        c.font = XFont(name=XFONT_NAME, size=10)
+        c.number_format = '€ #,##0.00'
+        row += 1
+
+        eind_row = row
+        ws.cell(row=row, column=4, value="Totaal incl. BTW").alignment = Alignment(horizontal="right")
+        ws.cell(row=row, column=4).font = XFont(name=XFONT_NAME, size=11, bold=True)
+        c = ws.cell(row=row, column=5, value=f"=E{basis_row}+E{btw_row}")
+        c.font = XFont(name=XFONT_NAME, size=11, bold=True)
+        c.number_format = '€ #,##0.00'
+        for col in (4, 5):
+            ws.cell(row=row, column=col).fill = PatternFill("solid", fgColor=XTOTAL_FILL)
+        row += 1
+    else:
+        eind_row = row
+        ws.cell(row=row, column=4, value="TOTAAL").alignment = Alignment(horizontal="right")
+        ws.cell(row=row, column=4).font = XFont(name=XFONT_NAME, size=11, bold=True)
+        c = ws.cell(row=row, column=5, value=f"=E{basis_row}")
+        c.font = XFont(name=XFONT_NAME, size=11, bold=True)
+        c.number_format = '€ #,##0.00'
+        for col in (4, 5):
+            ws.cell(row=row, column=col).fill = PatternFill("solid", fgColor=XTOTAL_FILL)
+        row += 1
+
+    if data.aanbetaling_termijnen:
+        row += 1
+        c = ws.cell(row=row, column=1, value="Betaaltermijnen")
+        c.font = XFont(name=XFONT_NAME, size=11, bold=True)
+        row += 1
+        termijnen = data.aanbetaling_termijnen
+        term_rows = []
+        for idx, termijn in enumerate(termijnen):
+            ws.cell(row=row, column=1, value=f"{termijn.label} ({termijn.percentage:g}%)").font = XFont(name=XFONT_NAME, size=10)
+            if idx == len(termijnen) - 1 and term_rows:
+                refs = "+".join(f"B{r}" for r in term_rows)
+                c = ws.cell(row=row, column=2, value=f"=E{eind_row}-({refs})")
+            else:
+                c = ws.cell(row=row, column=2, value=f"=E{eind_row}*{termijn.percentage / 100}")
+            c.font = XFont(name=XFONT_NAME, size=10)
+            c.number_format = '€ #,##0.00'
+            term_rows.append(row)
+            row += 1
+
+    if data.algemene_opmerkingen:
+        row += 1
+        for note in data.algemene_opmerkingen:
+            ws.merge_cells(f"A{row}:E{row}")
+            c = ws.cell(row=row, column=1, value=note)
+            c.font = XFont(name=XFONT_NAME, size=9, italic=True, color="555555")
+            row += 1
+
+    buf = _io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@app.post("/generate-xlsx")
+async def generate_xlsx(data: GenerateRequest):
+    xlsx_bytes = build_xlsx(data)
+    return StreamingResponse(
+        _io.BytesIO(xlsx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="offerte.xlsx"'},
+    )
