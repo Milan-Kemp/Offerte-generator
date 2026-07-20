@@ -172,7 +172,7 @@ import io as _io
 import os
 import base64
 from typing import Optional, List
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from fastapi.responses import StreamingResponse
 from docx import Document as DocxDocument
 from docx.shared import Pt, Cm, RGBColor
@@ -205,6 +205,15 @@ class Regel(BaseModel):
     waarschuwing: Optional[str] = None
     opmerking: Optional[str] = None
     foto_base64: Optional[str] = None  # optionele productfoto, ruwe base64 zonder data:-prefix
+
+    @model_validator(mode="after")
+    def _vul_prijs_per_stuk_aan(self):
+        # Als iemand alleen aantal + totaal invult (bijv. handmatig een regel
+        # toevoegen in het dashboard) en de prijs per stuk leeg laat, reken
+        # 'm hier uit zodat de kolom nooit onnodig leeg blijft.
+        if self.prijs_per_stuk is None and self.aantal:
+            self.prijs_per_stuk = round(self.totaal / self.aantal, 2)
+        return self
 
 
 class Klant(BaseModel):
