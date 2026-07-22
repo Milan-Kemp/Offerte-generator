@@ -185,14 +185,20 @@ FONT_NAME = "Calibri"
 HEADER_BG = "2F5233"
 SHADE_BG = "F2F2F2"
 TOTAL_BG = "E4E4E4"
+REFURNITY_GREEN = "8DC63F"
 REFURNITY_LOGO_PATH = os.path.join(os.path.dirname(__file__), "refurnity_logo.png")
 REFURNITY_ADDRESS_LINES = [
     "Refurnity BV",
-    "Bergerweg 6, 6085 AT Horn",
+    "Veerstraat 47 II, 1075 SN Amsterdam",
     "Telefoon 0621502536",
     "Mail info@ReFurnity.nl",
     "www.ReFurnity.nl",
 ]
+REFURNITY_NAAM = "ReFurnity BV"
+REFURNITY_ADRES_KORT = ["Veerstraat 47 II", "1075 SN Amsterdam"]
+REFURNITY_BANK = "NL28 RABO 0146 2478 09"
+REFURNITY_BTW = "NL8176.80.056.B01"
+REFURNITY_KVK = "12065660"
 
 
 class Regel(BaseModel):
@@ -228,6 +234,23 @@ class AanbetalingTermijn(BaseModel):
     percentage: float  # bijv. 50 voor 50%
 
 
+class DocumentGegevens(BaseModel):
+    # Orderbevestiging
+    ordernummer: Optional[str] = None
+    projectmanager: Optional[str] = None
+    accountmanager: Optional[str] = None
+    levertermijn: Optional[str] = None
+    betalingstermijn: Optional[str] = None
+    # Factuur
+    factuurnummer: Optional[str] = None
+    factuurdatum: Optional[str] = None
+    vervaldatum: Optional[str] = None
+    # Gedeeld
+    datum: Optional[str] = None
+    referentie: Optional[str] = None  # "Uw referentie" / kenmerk
+    gebaseerd_op: Optional[str] = None  # verwijzing naar offerte- of ordernummer
+
+
 class GenerateRequest(BaseModel):
     regels: List[Regel]
     algemene_opmerkingen: Optional[List[str]] = []
@@ -236,6 +259,8 @@ class GenerateRequest(BaseModel):
     toeslag_percentage: Optional[float] = None  # bijv. 20 voor 20% opslag op het leveranciersbedrag
     btw_percentage: Optional[float] = 21  # standaard 21%, zet expliciet op 0 om BTW-regel weg te laten
     aanbetaling_termijnen: Optional[List[AanbetalingTermijn]] = None
+    document_type: Optional[str] = "offerte"  # "offerte" | "orderbevestiging" | "factuur"
+    document: Optional[DocumentGegevens] = None
 
 
 def _shade_cell(cell, color_hex):
@@ -254,10 +279,11 @@ def _repeat_header(row):
     trPr.append(header)
 
 
-def _set_font(run, size=10, bold=False, color=None):
+def _set_font(run, size=10, bold=False, color=None, italic=False):
     run.font.name = FONT_NAME
     run.font.size = Pt(size)
     run.font.bold = bold
+    run.font.italic = italic
     if color:
         run.font.color.rgb = RGBColor.from_string(color)
 
@@ -266,74 +292,37 @@ def _money(n):
     return f"€ {n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def build_docx_template_1(data: GenerateRequest) -> bytes:
-    doc = DocxDocument()
-    section = doc.sections[0]
-    section.left_margin = Cm(1.5)
-    section.right_margin = Cm(1.5)
-    section.top_margin = Cm(1.5)
-    section.bottom_margin = Cm(1.5)
+def _tbl_no_borders(table):
+    tbl = table._tbl
+    tblPr = tbl.tblPr
+    borders = OxmlElement("w:tblBorders")
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        el = OxmlElement(f"w:{edge}")
+        el.set(qn("w:val"), "none")
+        borders.append(el)
+    tblPr.append(borders)
 
-    # Voorblad krijgt geen kop-logo (daar staat al een groot logo in de tekst zelf).
-    # Vanaf pagina 2 verschijnt automatisch het kleine logo rechtsboven.
-    section.different_first_page_header_footer = True
-    if os.path.exists(REFURNITY_LOGO_PATH):
-        header = section.header
-        hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
-        hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        hrun = hp.add_run()
-        hrun.add_picture(REFURNITY_LOGO_PATH, width=Cm(2.8))
-        # lege first-page header, zodat het voorblad zelf geen kop-logo krijgt
-        section.first_page_header.paragraphs[0].text = ""
 
-    # --- Voorblad ---
-    if data.klant and data.klant.logo_base64:
-        try:
-            logo_bytes = base64.b64decode(data.klant.logo_base64)
-            p = doc.add_paragraph()
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run = p.add_run()
-            run.add_picture(_io.BytesIO(logo_bytes), width=Cm(6))
-        except Exception:
-            pass  # kapotte/ontbrekende logo-data mag de generatie niet laten crashen
+def _fill_info_cell(cell, pairs):
+    cell.paragraphs[0].text = ""
+    first = True
+    for label, value in pairs:
+        if not value:
+            continue
+        p = cell.paragraphs[0] if first else cell.add_paragraph()
+        first = False
+        run = p.add_run(label + " ")
+        _set_font(run, size=10, bold=True)
+        run2 = p.add_run(str(value))
+        _set_font(run2, size=10)
+    if first:
+        cell.paragraphs[0].add_run("")
 
-    if data.klant and data.klant.naam:
-        p = doc.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = p.add_run(f"Offerte voor {data.klant.naam}")
-        _set_font(run, size=18, bold=True)
-        if data.klant.adres:
-            p2 = doc.add_paragraph()
-            p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run2 = p2.add_run(data.klant.adres)
-            _set_font(run2, size=10)
-        if data.klant.contact:
-            p3 = doc.add_paragraph()
-            p3.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run3 = p3.add_run(data.klant.contact)
-            _set_font(run3, size=10)
 
-    # ReFurnity-logo en -adres, groot en gecentreerd, alleen op het voorblad
-    doc.add_paragraph()
-    if os.path.exists(REFURNITY_LOGO_PATH):
-        p = doc.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = p.add_run()
-        run.add_picture(REFURNITY_LOGO_PATH, width=Cm(7))
-    for line in REFURNITY_ADDRESS_LINES:
-        p = doc.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = p.add_run(line)
-        _set_font(run, size=9, color="666666")
-
-    doc.add_page_break()
-
-    # --- Inhoudspagina ---
-    title = doc.add_paragraph()
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = title.add_run("Offerte")
-    _set_font(run, size=18, bold=True)
-
+def _build_item_table_and_totals(doc, data: GenerateRequest) -> float:
+    """Bouwt de regel-tabel + totalenblok + aanbetalingstermijnen + opmerkingen.
+    Gedeeld door offerte, orderbevestiging en factuur zodat ze niet uit elkaar
+    kunnen groeien. Retourneert het eindtotaal (incl. eventuele BTW/toeslag)."""
     table = doc.add_table(rows=1, cols=5)
     table.autofit = False
     widths = [Cm(3.5), Cm(6), Cm(1.8), Cm(2.5), Cm(2.7)]
@@ -369,7 +358,7 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
                 frun = fp.add_run()
                 frun.add_picture(_io.BytesIO(foto_bytes), width=Cm(2.8))
             except Exception:
-                pass  # kapotte fotodata mag de generatie niet laten crashen
+                pass
 
         cell1 = row.cells[1]
         cell1.paragraphs[0].text = ""
@@ -460,7 +449,6 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
         lopend_totaal = 0.0
         for idx, termijn in enumerate(termijnen):
             if idx == len(termijnen) - 1:
-                # laatste termijn = restbedrag, zodat de som altijd exact klopt
                 bedrag = round(eindtotaal - lopend_totaal, 2)
             else:
                 bedrag = round(eindtotaal * (termijn.percentage / 100), 2)
@@ -477,10 +465,251 @@ def build_docx_template_1(data: GenerateRequest) -> bytes:
             _set_font(run, size=9, color="555555")
             run.italic = True
 
+    return eindtotaal
+
+
+def _build_offerte(doc, data: GenerateRequest):
+    section = doc.sections[0]
+
+    section.different_first_page_header_footer = True
+    if os.path.exists(REFURNITY_LOGO_PATH):
+        header = section.header
+        hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+        hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        hrun = hp.add_run()
+        hrun.add_picture(REFURNITY_LOGO_PATH, width=Cm(2.8))
+        section.first_page_header.paragraphs[0].text = ""
+
+    if data.klant and data.klant.logo_base64:
+        try:
+            logo_bytes = base64.b64decode(data.klant.logo_base64)
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run()
+            run.add_picture(_io.BytesIO(logo_bytes), width=Cm(6))
+        except Exception:
+            pass
+
+    if data.klant and data.klant.naam:
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run(f"Offerte voor {data.klant.naam}")
+        _set_font(run, size=18, bold=True)
+        if data.klant.adres:
+            p2 = doc.add_paragraph()
+            p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run2 = p2.add_run(data.klant.adres)
+            _set_font(run2, size=10)
+        if data.klant.contact:
+            p3 = doc.add_paragraph()
+            p3.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run3 = p3.add_run(data.klant.contact)
+            _set_font(run3, size=10)
+
+    doc.add_paragraph()
+    if os.path.exists(REFURNITY_LOGO_PATH):
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run()
+        run.add_picture(REFURNITY_LOGO_PATH, width=Cm(7))
+    for line in REFURNITY_ADDRESS_LINES:
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run(line)
+        _set_font(run, size=9, color="666666")
+
+    doc.add_page_break()
+
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title.add_run("Offerte")
+    _set_font(run, size=18, bold=True)
+
+    _build_item_table_and_totals(doc, data)
+
+
+def _build_orderbevestiging(doc, data: GenerateRequest):
+    section = doc.sections[0]
+    if os.path.exists(REFURNITY_LOGO_PATH):
+        header = section.header
+        hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+        hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        hrun = hp.add_run()
+        hrun.add_picture(REFURNITY_LOGO_PATH, width=Cm(2.8))
+
+    d = data.document or DocumentGegevens()
+
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title.add_run("Orderbevestiging")
+    _set_font(run, size=20, bold=True, color=HEADER_BG)
+
+    if data.klant and data.klant.naam:
+        sub = doc.add_paragraph()
+        sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = sub.add_run(data.klant.naam)
+        _set_font(run, size=13, bold=True)
+        if data.klant.adres or data.klant.contact:
+            sub2 = doc.add_paragraph()
+            sub2.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            tekst = "  ·  ".join(x for x in [data.klant.adres, data.klant.contact] if x)
+            run = sub2.add_run(tekst)
+            _set_font(run, size=10, color="555555")
+
+    doc.add_paragraph()
+
+    outer = doc.add_table(rows=1, cols=2)
+    outer.autofit = False
+    outer.columns[0].width = Cm(8)
+    outer.columns[1].width = Cm(8)
+    left_cell, right_cell = outer.rows[0].cells
+    _fill_info_cell(left_cell, [
+        ("Ordernummer:", d.ordernummer),
+        ("Datum:", d.datum),
+        ("Uw referentie:", d.referentie),
+    ])
+    _fill_info_cell(right_cell, [
+        ("Projectmanager:", d.projectmanager),
+        ("Accountmanager:", d.accountmanager),
+        ("Gebaseerd op offerte:", d.gebaseerd_op),
+    ])
+    _tbl_no_borders(outer)
+
+    doc.add_paragraph()
+    _build_item_table_and_totals(doc, data)
+
+    doc.add_paragraph()
+    for label, value in [("Levertermijn:", d.levertermijn), ("Betalingstermijn:", d.betalingstermijn)]:
+        if not value:
+            continue
+        p = doc.add_paragraph()
+        run = p.add_run(label + " ")
+        _set_font(run, size=10, bold=True)
+        run2 = p.add_run(value)
+        _set_font(run2, size=10)
+
+    p = doc.add_paragraph()
+    run = p.add_run("Hartelijk dank voor uw bestelling.")
+    _set_font(run, size=10, italic=True, color=REFURNITY_GREEN)
+
+
+def _build_factuur(doc, data: GenerateRequest):
+    d = data.document or DocumentGegevens()
+
+    outer = doc.add_table(rows=1, cols=2)
+    outer.autofit = False
+    outer.columns[0].width = Cm(6)
+    outer.columns[1].width = Cm(10)
+    logo_cell, info_cell = outer.rows[0].cells
+
+    logo_cell.paragraphs[0].text = ""
+    logo_cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+    if os.path.exists(REFURNITY_LOGO_PATH):
+        p = logo_cell.paragraphs[0]
+        run = p.add_run()
+        run.add_picture(REFURNITY_LOGO_PATH, width=Cm(5.5))
+
+    info_cell.paragraphs[0].text = ""
+    info_cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+    info_lines = [REFURNITY_NAAM] + REFURNITY_ADRES_KORT + [
+        f"Bank: {REFURNITY_BANK}",
+        f"BTW: {REFURNITY_BTW}",
+        f"KVK: {REFURNITY_KVK}",
+    ]
+    for i, line in enumerate(info_lines):
+        p = info_cell.paragraphs[0] if i == 0 else info_cell.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        run = p.add_run(line)
+        _set_font(run, size=9, bold=(i == 0), color="333333" if i == 0 else "666666")
+    _tbl_no_borders(outer)
+
+    hr = doc.add_paragraph()
+    hr.paragraph_format.space_before = Pt(8)
+    hr.paragraph_format.space_after = Pt(14)
+    pPr = hr._p.get_or_add_pPr()
+    pBdr = OxmlElement("w:pBdr")
+    bottom = OxmlElement("w:bottom")
+    bottom.set(qn("w:val"), "single")
+    bottom.set(qn("w:sz"), "8")
+    bottom.set(qn("w:space"), "1")
+    bottom.set(qn("w:color"), REFURNITY_GREEN)
+    pBdr.append(bottom)
+    pPr.append(pBdr)
+
+    if data.klant and data.klant.naam:
+        client_table = doc.add_table(rows=1, cols=1)
+        client_table.autofit = False
+        client_table.columns[0].width = Cm(16)
+        c = client_table.rows[0].cells[0]
+        c.paragraphs[0].text = ""
+        lines = [data.klant.naam]
+        if data.klant.contact:
+            lines.append(f"T.a.v. {data.klant.contact}")
+        if data.klant.adres:
+            lines.append(data.klant.adres)
+        for i, line in enumerate(lines):
+            p = c.paragraphs[0] if i == 0 else c.add_paragraph()
+            run = p.add_run(line)
+            _set_font(run, size=10, bold=(i == 0))
+        _tbl_no_borders(client_table)
+
+    doc.add_paragraph()
+
+    title = doc.add_paragraph()
+    run = title.add_run(f"Factuur {d.factuurnummer or ''}".strip())
+    _set_font(run, size=20, bold=True, color=HEADER_BG)
+
+    if d.referentie or d.gebaseerd_op:
+        p = doc.add_paragraph()
+        run = p.add_run("Kenmerk: ")
+        _set_font(run, size=10, bold=True)
+        tekst = "  ·  ".join(x for x in [d.referentie, f"Gebaseerd op {d.gebaseerd_op}" if d.gebaseerd_op else None] if x)
+        run2 = p.add_run(tekst)
+        _set_font(run2, size=10)
+
+    outer2 = doc.add_table(rows=1, cols=2)
+    outer2.autofit = False
+    outer2.columns[0].width = Cm(4)
+    outer2.columns[1].width = Cm(4)
+    c1, c2 = outer2.rows[0].cells
+    _fill_info_cell(c1, [("Factuurdatum:", d.factuurdatum)])
+    _fill_info_cell(c2, [("Vervaldatum:", d.vervaldatum)])
+    _tbl_no_borders(outer2)
+
+    doc.add_paragraph()
+    eindtotaal = _build_item_table_and_totals(doc, data)
+
+    doc.add_paragraph()
+    p = doc.add_paragraph()
+    vervaldatum_tekst = f"vóór {d.vervaldatum} " if d.vervaldatum else ""
+    factuurnr_tekst = f", onder vermelding van {d.factuurnummer}" if d.factuurnummer else ""
+    run = p.add_run(
+        f"Wij verzoeken u vriendelijk het bovenstaande bedrag van {_money(eindtotaal)} {vervaldatum_tekst}"
+        f"over te maken naar bovenstaand rekeningnummer{factuurnr_tekst}. "
+        "Voor vragen kunt u contact opnemen via info@ReFurnity.nl."
+    )
+    _set_font(run, size=9, color="555555")
+
+
+def build_docx_template_1(data: GenerateRequest) -> bytes:
+    doc = DocxDocument()
+    section = doc.sections[0]
+    section.left_margin = Cm(1.5)
+    section.right_margin = Cm(1.5)
+    section.top_margin = Cm(1.5)
+    section.bottom_margin = Cm(1.5)
+
+    doc_type = data.document_type or "offerte"
+    if doc_type == "orderbevestiging":
+        _build_orderbevestiging(doc, data)
+    elif doc_type == "factuur":
+        _build_factuur(doc, data)
+    else:
+        _build_offerte(doc, data)
+
     buf = _io.BytesIO()
     doc.save(buf)
     return buf.getvalue()
-
 
 TEMPLATE_BUILDERS = {
     "1": build_docx_template_1,
