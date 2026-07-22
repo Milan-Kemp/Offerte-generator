@@ -572,8 +572,11 @@ def _build_orderbevestiging(doc, data: GenerateRequest):
     _fill_info_cell(left_cell, [
         ("Ordernummer:", d.ordernummer),
         ("Datum:", d.datum),
+        ("Uw referentie:", d.referentie),
     ])
     _fill_info_cell(right_cell, [
+        ("Projectmanager:", d.projectmanager),
+        ("Accountmanager:", d.accountmanager),
         ("Gebaseerd op offerte:", d.gebaseerd_op),
     ])
     _tbl_no_borders(outer)
