@@ -319,10 +319,15 @@ def _fill_info_cell(cell, pairs):
         cell.paragraphs[0].add_run("")
 
 
-def _build_item_table_and_totals(doc, data: GenerateRequest) -> float:
+def _build_item_table_and_totals(doc, data: GenerateRequest, toon_details: bool = True) -> float:
     """Bouwt de regel-tabel + totalenblok + aanbetalingstermijnen + opmerkingen.
     Gedeeld door offerte, orderbevestiging en factuur zodat ze niet uit elkaar
-    kunnen groeien. Retourneert het eindtotaal (incl. eventuele BTW/toeslag)."""
+    kunnen groeien. Retourneert het eindtotaal (incl. eventuele BTW/toeslag).
+
+    toon_details=False (orderbevestiging/factuur): alleen item, omschrijving als
+    platte tekst, aantal, prijs, totaal. Geen specs-bullets en geen productfoto's,
+    dat is voor een klant te veel ruis op een order-/betaaldocument. De offerte
+    blijft wel het volledige detail tonen (toon_details=True)."""
     table = doc.add_table(rows=1, cols=5)
     table.autofit = False
     widths = [Cm(3.5), Cm(6), Cm(1.8), Cm(2.5), Cm(2.7)]
@@ -351,7 +356,7 @@ def _build_item_table_and_totals(doc, data: GenerateRequest) -> float:
         run = p.add_run(regel.item)
         _set_font(run, bold=True)
 
-        if regel.foto_base64:
+        if toon_details and regel.foto_base64:
             try:
                 foto_bytes = base64.b64decode(regel.foto_base64)
                 fp = row.cells[0].add_paragraph()
@@ -368,17 +373,18 @@ def _build_item_table_and_totals(doc, data: GenerateRequest) -> float:
             run = par.add_run(regel.omschrijving)
             _set_font(run)
             first = False
-        for spec in (regel.specs or []):
-            par = cell1.paragraphs[0] if first else cell1.add_paragraph()
-            run = par.add_run(f"•  {spec}")
-            _set_font(run, size=9, color="444444")
-            first = False
-        if regel.opmerking:
-            par = cell1.paragraphs[0] if first else cell1.add_paragraph()
-            run = par.add_run(regel.opmerking)
-            _set_font(run, size=9, color="555555")
-            run.italic = True
-            first = False
+        if toon_details:
+            for spec in (regel.specs or []):
+                par = cell1.paragraphs[0] if first else cell1.add_paragraph()
+                run = par.add_run(f"•  {spec}")
+                _set_font(run, size=9, color="444444")
+                first = False
+            if regel.opmerking:
+                par = cell1.paragraphs[0] if first else cell1.add_paragraph()
+                run = par.add_run(regel.opmerking)
+                _set_font(run, size=9, color="555555")
+                run.italic = True
+                first = False
         if first:
             cell1.paragraphs[0].add_run("")
 
@@ -576,7 +582,7 @@ def _build_orderbevestiging(doc, data: GenerateRequest):
     _tbl_no_borders(outer)
 
     doc.add_paragraph()
-    _build_item_table_and_totals(doc, data)
+    _build_item_table_and_totals(doc, data, toon_details=False)
 
     doc.add_paragraph()
     for label, value in [("Levertermijn:", d.levertermijn), ("Betalingstermijn:", d.betalingstermijn)]:
@@ -677,7 +683,7 @@ def _build_factuur(doc, data: GenerateRequest):
     _tbl_no_borders(outer2)
 
     doc.add_paragraph()
-    eindtotaal = _build_item_table_and_totals(doc, data)
+    eindtotaal = _build_item_table_and_totals(doc, data, toon_details=False)
 
     doc.add_paragraph()
     p = doc.add_paragraph()
