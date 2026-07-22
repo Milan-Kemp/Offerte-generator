@@ -572,11 +572,8 @@ def _build_orderbevestiging(doc, data: GenerateRequest):
     _fill_info_cell(left_cell, [
         ("Ordernummer:", d.ordernummer),
         ("Datum:", d.datum),
-        ("Uw referentie:", d.referentie),
     ])
     _fill_info_cell(right_cell, [
-        ("Projectmanager:", d.projectmanager),
-        ("Accountmanager:", d.accountmanager),
         ("Gebaseerd op offerte:", d.gebaseerd_op),
     ])
     _tbl_no_borders(outer)
@@ -731,7 +728,8 @@ async def generate_docx(data: GenerateRequest):
         raise HTTPException(status_code=400, detail=f"Onbekend template: {data.template}")
 
     docx_bytes = builder(data)
-    filename = "offerte.docx"
+    doc_type = data.document_type or "offerte"
+    filename = f"{doc_type}.docx"
     return StreamingResponse(
         _io.BytesIO(docx_bytes),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -783,10 +781,11 @@ async def generate_pdf(data: GenerateRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+    doc_type = data.document_type or "offerte"
     return StreamingResponse(
         _io.BytesIO(pdf_bytes),
         media_type="application/pdf",
-        headers={"Content-Disposition": 'attachment; filename="offerte.pdf"'},
+        headers={"Content-Disposition": f'attachment; filename="{doc_type}.pdf"'},
     )
 
 
@@ -982,8 +981,9 @@ def build_xlsx(data: GenerateRequest) -> bytes:
 @app.post("/generate-xlsx")
 async def generate_xlsx(data: GenerateRequest):
     xlsx_bytes = build_xlsx(data)
+    doc_type = data.document_type or "offerte"
     return StreamingResponse(
         _io.BytesIO(xlsx_bytes),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": 'attachment; filename="offerte.xlsx"'},
+        headers={"Content-Disposition": f'attachment; filename="{doc_type}.xlsx"'},
     )
