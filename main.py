@@ -421,20 +421,19 @@ def _build_item_table_and_totals(doc, data: GenerateRequest, toon_details: bool 
         _set_font(run, size=11 if bold else 10, bold=bold)
 
     subtotaal = grand_total
-    heeft_toeslag = bool(data.toeslag_percentage)
+    toeslag_percentage = data.toeslag_percentage or 0
+    toeslag_bedrag = subtotaal * (toeslag_percentage / 100) if toeslag_percentage else 0.0
+    totaal_excl_btw = subtotaal + toeslag_bedrag
     heeft_btw = bool(data.btw_percentage)
+    toon_breakdown = toon_details and bool(toeslag_bedrag)
 
-    if not heeft_toeslag and not heeft_btw:
-        _add_summary_row("TOTAAL", subtotaal, shade_bg=TOTAL_BG)
-        eindtotaal = subtotaal
+    if not toon_breakdown and not heeft_btw:
+        _add_summary_row("TOTAAL", totaal_excl_btw, shade_bg=TOTAL_BG)
+        eindtotaal = totaal_excl_btw
     else:
-        if heeft_toeslag:
+        if toon_breakdown:
             _add_summary_row("Subtotaal", subtotaal, bold=False)
-            toeslag_bedrag = subtotaal * (data.toeslag_percentage / 100)
-            _add_summary_row(f"Toeslag ({data.toeslag_percentage:g}%)", toeslag_bedrag, bold=False)
-            totaal_excl_btw = subtotaal + toeslag_bedrag
-        else:
-            totaal_excl_btw = subtotaal
+            _add_summary_row(f"Toeslag ({toeslag_percentage:g}%)", toeslag_bedrag, bold=False)
 
         if heeft_btw:
             _add_summary_row("Totaal excl. BTW", totaal_excl_btw, bold=False)
@@ -446,7 +445,7 @@ def _build_item_table_and_totals(doc, data: GenerateRequest, toon_details: bool 
             eindtotaal = totaal_excl_btw
             _add_summary_row("TOTAAL", eindtotaal, shade_bg=TOTAL_BG)
 
-    if data.aanbetaling_termijnen:
+    if toon_details and data.aanbetaling_termijnen:
         doc.add_paragraph()
         p = doc.add_paragraph()
         run = p.add_run("Betaaltermijnen")
@@ -810,7 +809,9 @@ XTOTAL_FILL = "E4E4E4"
 def build_xlsx(data: GenerateRequest) -> bytes:
     wb = Workbook()
     ws = wb.active
-    ws.title = "Offerte"
+    doc_type = data.document_type or "offerte"
+    doc_titel = {"orderbevestiging": "Orderbevestiging", "factuur": "Factuur"}.get(doc_type, "Offerte")
+    ws.title = doc_titel
 
     col_widths = {"A": 30, "B": 40, "C": 10, "D": 14, "E": 14}
     for col, w in col_widths.items():
@@ -819,7 +820,7 @@ def build_xlsx(data: GenerateRequest) -> bytes:
     row = 1
     if data.klant and data.klant.naam:
         ws.merge_cells(f"A{row}:E{row}")
-        c = ws.cell(row=row, column=1, value=f"Offerte voor {data.klant.naam}")
+        c = ws.cell(row=row, column=1, value=f"{doc_titel} voor {data.klant.naam}")
         c.font = XFont(name=XFONT_NAME, size=14, bold=True)
         c.alignment = Alignment(horizontal="center")
         row += 1
@@ -891,17 +892,21 @@ def build_xlsx(data: GenerateRequest) -> bytes:
         row += 1
     last_item_row = row - 1
 
-    row += 1
-    subtotaal_row = row
-    ws.cell(row=row, column=4, value="Subtotaal").font = XFont(name=XFONT_NAME, size=10)
-    ws.cell(row=row, column=4).alignment = Alignment(horizontal="right")
-    c = ws.cell(row=row, column=5, value=f"=SUM(E{first_item_row}:E{last_item_row})")
-    c.font = XFont(name=XFONT_NAME, size=10, bold=True)
-    c.number_format = '€ #,##0.00'
-    row += 1
+    toon_breakdown = (doc_type == "offerte") and bool(data.toeslag_percentage)
+
+    subtotaal_row = None
+    if toon_breakdown:
+        row += 1
+        subtotaal_row = row
+        ws.cell(row=row, column=4, value="Subtotaal").font = XFont(name=XFONT_NAME, size=10)
+        ws.cell(row=row, column=4).alignment = Alignment(horizontal="right")
+        c = ws.cell(row=row, column=5, value=f"=SUM(E{first_item_row}:E{last_item_row})")
+        c.font = XFont(name=XFONT_NAME, size=10, bold=True)
+        c.number_format = '€ #,##0.00'
+        row += 1
 
     excl_btw_row = None
-    if data.toeslag_percentage:
+    if toon_breakdown:
         toeslag_row = row
         ws.cell(row=row, column=4, value=f"Toeslag ({data.toeslag_percentage:g}%)").alignment = Alignment(horizontal="right")
         ws.cell(row=row, column=4).font = XFont(name=XFONT_NAME, size=10)
@@ -917,8 +922,30 @@ def build_xlsx(data: GenerateRequest) -> bytes:
         c.font = XFont(name=XFONT_NAME, size=10)
         c.number_format = '€ #,##0.00'
         row += 1
+    elif data.toeslag_percentage:
+        # Toeslag blijft verwerkt in het totaal, maar wordt niet als aparte regel
+        # (en niet als losse Subtotaal) getoond aan de klant bij orderbevestiging/factuur.
+        row += 1
+        excl_btw_row = row
+        ws.cell(row=row, column=4, value="Totaal excl. BTW").alignment = Alignment(horizontal="right")
+        ws.cell(row=row, column=4).font = XFont(name=XFONT_NAME, size=10)
+        c = ws.cell(row=row, column=5, value=f"=SUM(E{first_item_row}:E{last_item_row})*(1+{data.toeslag_percentage / 100})")
+        c.font = XFont(name=XFONT_NAME, size=10)
+        c.number_format = '€ #,##0.00'
+        row += 1
 
     basis_row = excl_btw_row or subtotaal_row
+    if basis_row is None:
+        # Geen toeslag: basis voor eventuele BTW-berekening is direct de som van de regels.
+        row += 1
+        subtotaal_row = row
+        ws.cell(row=row, column=4, value="Subtotaal").font = XFont(name=XFONT_NAME, size=10)
+        ws.cell(row=row, column=4).alignment = Alignment(horizontal="right")
+        c = ws.cell(row=row, column=5, value=f"=SUM(E{first_item_row}:E{last_item_row})")
+        c.font = XFont(name=XFONT_NAME, size=10, bold=True)
+        c.number_format = '€ #,##0.00'
+        row += 1
+        basis_row = subtotaal_row
 
     if data.btw_percentage:
         btw_row = row
@@ -949,7 +976,7 @@ def build_xlsx(data: GenerateRequest) -> bytes:
             ws.cell(row=row, column=col).fill = PatternFill("solid", fgColor=XTOTAL_FILL)
         row += 1
 
-    if data.aanbetaling_termijnen:
+    if doc_type == "offerte" and data.aanbetaling_termijnen:
         row += 1
         c = ws.cell(row=row, column=1, value="Betaaltermijnen")
         c.font = XFont(name=XFONT_NAME, size=11, bold=True)
