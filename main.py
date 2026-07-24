@@ -172,7 +172,7 @@ import io as _io
 import os
 import base64
 from typing import Optional, List
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, model_validator, field_validator
 from fastapi.responses import StreamingResponse
 from docx import Document as DocxDocument
 from docx.shared import Pt, Cm, RGBColor
@@ -201,6 +201,15 @@ REFURNITY_BTW = "NL8176.80.056.B01"
 REFURNITY_KVK = "12065660"
 
 
+def _leeg_naar_none(v):
+    """Lovable/n8n sturen lege getalvelden soms als lege string ("") in plaats
+    van null. Pydantic accepteert dat niet als geldig getal en gooit dan een
+    422 ("Input should be a valid number"). Vang dat hier af voor validatie."""
+    if isinstance(v, str) and v.strip() == "":
+        return None
+    return v
+
+
 class Regel(BaseModel):
     item: str
     omschrijving: Optional[str] = ""
@@ -211,6 +220,11 @@ class Regel(BaseModel):
     waarschuwing: Optional[str] = None
     opmerking: Optional[str] = None
     foto_base64: Optional[str] = None  # optionele productfoto, ruwe base64 zonder data:-prefix
+
+    @field_validator("aantal", "prijs_per_stuk", mode="before")
+    @classmethod
+    def _leeg_naar_none_of_nul(cls, v):
+        return _leeg_naar_none(v)
 
     @model_validator(mode="after")
     def _vul_prijs_per_stuk_aan(self):
@@ -232,6 +246,12 @@ class Klant(BaseModel):
 class AanbetalingTermijn(BaseModel):
     label: str
     percentage: float  # bijv. 50 voor 50%
+
+    @field_validator("percentage", mode="before")
+    @classmethod
+    def _leeg_naar_nul(cls, v):
+        v = _leeg_naar_none(v)
+        return 0.0 if v is None else v
 
 
 class DocumentGegevens(BaseModel):
@@ -261,6 +281,18 @@ class GenerateRequest(BaseModel):
     aanbetaling_termijnen: Optional[List[AanbetalingTermijn]] = None
     document_type: Optional[str] = "offerte"  # "offerte" | "orderbevestiging" | "factuur"
     document: Optional[DocumentGegevens] = None
+
+    @field_validator("toeslag_percentage", mode="before")
+    @classmethod
+    def _toeslag_leeg_naar_none(cls, v):
+        return _leeg_naar_none(v)
+
+    @field_validator("btw_percentage", mode="before")
+    @classmethod
+    def _btw_leeg_naar_default(cls, v):
+        v = _leeg_naar_none(v)
+        return 21 if v is None else v
+
 
 
 def _shade_cell(cell, color_hex):
