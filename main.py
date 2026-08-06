@@ -511,13 +511,9 @@ def _build_item_table_and_totals(doc, data: GenerateRequest, toon_details: bool 
             run = p.add_run(f"{termijn.label}: {termijn.percentage:g}% = {_money(bedrag)}")
             _set_font(run, size=10)
 
-    if data.algemene_opmerkingen:
-        doc.add_paragraph()
-        for note in data.algemene_opmerkingen:
-            p = doc.add_paragraph()
-            run = p.add_run(note)
-            _set_font(run, size=9, color="555555")
-            run.italic = True
+    # Let op: algemene_opmerkingen worden bewust NIET in het gegenereerde
+    # document geschreven. Dit veld blijft alleen zichtbaar in Lovable zelf
+    # (via de API-respons van de parse-stap), niet in wat de klant ontvangt.
 
     return eindtotaal
 
@@ -1064,13 +1060,9 @@ def build_xlsx(data: GenerateRequest) -> bytes:
             term_rows.append(row)
             row += 1
 
-    if data.algemene_opmerkingen:
-        row += 1
-        for note in data.algemene_opmerkingen:
-            ws.merge_cells(f"A{row}:E{row}")
-            c = ws.cell(row=row, column=1, value=note)
-            c.font = XFont(name=XFONT_NAME, size=9, italic=True, color="555555")
-            row += 1
+    # Let op: algemene_opmerkingen worden bewust NIET in het gegenereerde
+    # document geschreven. Dit veld blijft alleen zichtbaar in Lovable zelf
+    # (via de API-respons van de parse-stap), niet in wat de klant ontvangt.
 
     buf = _io.BytesIO()
     wb.save(buf)
