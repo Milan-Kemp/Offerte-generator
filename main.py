@@ -277,6 +277,7 @@ class GenerateRequest(BaseModel):
     klant: Optional[Klant] = None
     template: Optional[str] = "1"
     toeslag_percentage: Optional[float] = None  # bijv. 20 voor 20% opslag op het leveranciersbedrag
+    korting_percentage: Optional[float] = None  # bijv. 10 voor 10% korting, altijd zichtbaar voor de klant
     btw_percentage: Optional[float] = 21  # standaard 21%, zet expliciet op 0 om BTW-regel weg te laten
     aanbetaling_termijnen: Optional[List[AanbetalingTermijn]] = None
     document_type: Optional[str] = "offerte"  # "offerte" | "orderbevestiging" | "factuur"
@@ -285,6 +286,11 @@ class GenerateRequest(BaseModel):
     @field_validator("toeslag_percentage", mode="before")
     @classmethod
     def _toeslag_leeg_naar_none(cls, v):
+        return _leeg_naar_none(v)
+
+    @field_validator("korting_percentage", mode="before")
+    @classmethod
+    def _korting_leeg_naar_none(cls, v):
         return _leeg_naar_none(v)
 
     @field_validator("btw_percentage", mode="before")
@@ -455,17 +461,28 @@ def _build_item_table_and_totals(doc, data: GenerateRequest, toon_details: bool 
     subtotaal = grand_total
     toeslag_percentage = data.toeslag_percentage or 0
     toeslag_bedrag = subtotaal * (toeslag_percentage / 100) if toeslag_percentage else 0.0
-    totaal_excl_btw = subtotaal + toeslag_bedrag
-    heeft_btw = bool(data.btw_percentage)
-    toon_breakdown = toon_details and bool(toeslag_bedrag)
+    na_toeslag = subtotaal + toeslag_bedrag
 
-    if not toon_breakdown and not heeft_btw:
+    korting_percentage = data.korting_percentage or 0
+    korting_bedrag = na_toeslag * (korting_percentage / 100) if korting_percentage else 0.0
+    totaal_excl_btw = na_toeslag - korting_bedrag
+
+    heeft_btw = bool(data.btw_percentage)
+    toon_toeslag_breakdown = toon_details and bool(toeslag_bedrag)
+    # Korting is een klantvoordeel, geen interne marge: dit tonen we altijd
+    # (offerte, orderbevestiging én factuur), in tegenstelling tot Toeslag.
+    toon_korting = bool(korting_bedrag)
+    heeft_enige_breakdown = toon_toeslag_breakdown or toon_korting
+
+    if not heeft_enige_breakdown and not heeft_btw:
         _add_summary_row("TOTAAL", totaal_excl_btw, shade_bg=TOTAL_BG)
         eindtotaal = totaal_excl_btw
     else:
-        if toon_breakdown:
+        if toon_toeslag_breakdown:
             _add_summary_row("Subtotaal", subtotaal, bold=False)
             _add_summary_row(f"Toeslag ({toeslag_percentage:g}%)", toeslag_bedrag, bold=False)
+        if toon_korting:
+            _add_summary_row(f"Korting ({korting_percentage:g}%)", -korting_bedrag, bold=False)
 
         if heeft_btw:
             _add_summary_row("Totaal excl. BTW", totaal_excl_btw, bold=False)
@@ -978,6 +995,26 @@ def build_xlsx(data: GenerateRequest) -> bytes:
         c.number_format = '€ #,##0.00'
         row += 1
         basis_row = subtotaal_row
+
+    if data.korting_percentage:
+        # Korting is een klantvoordeel, geen interne marge: altijd zichtbaar,
+        # bij offerte, orderbevestiging én factuur (in tegenstelling tot Toeslag).
+        korting_row = row
+        ws.cell(row=row, column=4, value=f"Korting ({data.korting_percentage:g}%)").alignment = Alignment(horizontal="right")
+        ws.cell(row=row, column=4).font = XFont(name=XFONT_NAME, size=10)
+        c = ws.cell(row=row, column=5, value=f"=-E{basis_row}*{data.korting_percentage / 100}")
+        c.font = XFont(name=XFONT_NAME, size=10)
+        c.number_format = '€ #,##0.00'
+        row += 1
+
+        na_korting_row = row
+        ws.cell(row=row, column=4, value="Totaal na korting").alignment = Alignment(horizontal="right")
+        ws.cell(row=row, column=4).font = XFont(name=XFONT_NAME, size=10)
+        c = ws.cell(row=row, column=5, value=f"=E{basis_row}+E{korting_row}")
+        c.font = XFont(name=XFONT_NAME, size=10)
+        c.number_format = '€ #,##0.00'
+        row += 1
+        basis_row = na_korting_row
 
     if data.btw_percentage:
         btw_row = row
