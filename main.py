@@ -227,6 +227,15 @@ class Regel(BaseModel):
     def _leeg_naar_none_of_nul(cls, v):
         return _leeg_naar_none(v)
 
+    @field_validator("totaal", mode="before")
+    @classmethod
+    def _totaal_leeg_naar_nul(cls, v):
+        # "totaal" is verplicht in het model, maar een gebruiker kan een
+        # nieuwe regel toevoegen en het bedrag nog even leeg laten staan.
+        # Een lege string mag dan niet de hele generatie laten crashen.
+        v = _leeg_naar_none(v)
+        return 0.0 if v is None else v
+
     @model_validator(mode="after")
     def _vul_prijs_per_stuk_aan(self):
         # Als iemand alleen aantal + totaal invult (bijv. handmatig een regel
@@ -491,10 +500,9 @@ def _build_item_table_and_totals(doc, data: GenerateRequest, toon_details: bool 
 
     heeft_btw = bool(data.btw_percentage)
     toon_toeslag_breakdown = toon_details and bool(toeslag_bedrag)
-    # Korting is een klantvoordeel, geen interne marge: dit tonen we altijd
-    # (offerte, orderbevestiging én factuur), in tegenstelling tot Toeslag.
-    toon_korting = bool(korting_bedrag)
-    heeft_enige_breakdown = toon_toeslag_breakdown or toon_korting
+    # Korting wordt, net als Toeslag, nergens als aparte regel getoond -
+    # alleen stilzwijgend verwerkt in het eindtotaal.
+    heeft_enige_breakdown = toon_toeslag_breakdown
 
     if not heeft_enige_breakdown and not heeft_btw:
         _add_summary_row("TOTAAL", totaal_excl_btw, shade_bg=TOTAL_BG)
@@ -503,8 +511,6 @@ def _build_item_table_and_totals(doc, data: GenerateRequest, toon_details: bool 
         if toon_toeslag_breakdown:
             _add_summary_row("Subtotaal", subtotaal, bold=False)
             _add_summary_row(f"Toeslag ({toeslag_percentage:g}%)", toeslag_bedrag, bold=False)
-        if toon_korting:
-            _add_summary_row(f"Korting ({korting_percentage:g}%)", -korting_bedrag, bold=False)
 
         if heeft_btw:
             _add_summary_row("Totaal excl. BTW", totaal_excl_btw, bold=False)
@@ -1016,24 +1022,17 @@ def build_xlsx(data: GenerateRequest) -> bytes:
         basis_row = subtotaal_row
 
     if data.korting_percentage:
-        # Korting is een klantvoordeel, geen interne marge: altijd zichtbaar,
-        # bij offerte, orderbevestiging én factuur (in tegenstelling tot Toeslag).
-        korting_row = row
-        ws.cell(row=row, column=4, value=f"Korting ({data.korting_percentage:g}%)").alignment = Alignment(horizontal="right")
-        ws.cell(row=row, column=4).font = XFont(name=XFONT_NAME, size=10)
-        c = ws.cell(row=row, column=5, value=f"=-E{basis_row}*{data.korting_percentage / 100}")
-        c.font = XFont(name=XFONT_NAME, size=10)
-        c.number_format = '€ #,##0.00'
-        row += 1
-
-        na_korting_row = row
-        ws.cell(row=row, column=4, value="Totaal na korting").alignment = Alignment(horizontal="right")
-        ws.cell(row=row, column=4).font = XFont(name=XFONT_NAME, size=10)
-        c = ws.cell(row=row, column=5, value=f"=E{basis_row}+E{korting_row}")
-        c.font = XFont(name=XFONT_NAME, size=10)
-        c.number_format = '€ #,##0.00'
-        row += 1
-        basis_row = na_korting_row
+        # Korting wordt, net als Toeslag, nergens als aparte regel getoond -
+        # alleen stilzwijgend verwerkt door de bestaande basisregel te
+        # vermenigvuldigen met de kortingsfactor, zonder een nieuwe rij.
+        basis_cell = ws.cell(row=basis_row, column=5)
+        bestaande_formule = basis_cell.value
+        basis_cell.value = f"=({bestaande_formule[1:]})*(1-{data.korting_percentage / 100})"
+        # Het label mag na verwerking van de korting niet meer "Subtotaal"
+        # heten, want dat bedrag klopt dan niet meer met de losse regeltotalen.
+        label_cell = ws.cell(row=basis_row, column=4)
+        if label_cell.value == "Subtotaal":
+            label_cell.value = "Totaal excl. BTW" if data.btw_percentage else "TOTAAL"
 
     if data.btw_percentage:
         btw_row = row
