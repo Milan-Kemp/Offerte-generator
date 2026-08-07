@@ -180,6 +180,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_ALIGN_VERTICAL
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+from PIL import Image as PILImage
 
 FONT_NAME = "Calibri"
 HEADER_BG = "2F5233"
@@ -330,6 +331,26 @@ def _money(n):
     return f"€ {n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def _verwerk_foto_bytes(raw_bytes: bytes, item_naam: str = "?", max_breedte_px: int = 1000) -> bytes:
+    """Normaliseert een geuploade productfoto voor het inladen in Word/Excel.
+
+    Vangt de twee meest voorkomende faalredenen af die eerder stil werden
+    weggeslikt (bare except): CMYK/palette-kleurmodus (waar python-docx en
+    openpyxl niet altijd mee overweg kunnen) en onnodig grote pixelafmetingen
+    (die de foto in het document ook nodeloos groot en traag maken, terwijl
+    hij daar toch maar een paar centimeter breed wordt getoond).
+    """
+    img = PILImage.open(_io.BytesIO(raw_bytes))
+    if img.mode not in ("RGB", "L"):
+        img = img.convert("RGB")
+    if img.width > max_breedte_px:
+        nieuwe_hoogte = round(img.height * (max_breedte_px / img.width))
+        img = img.resize((max_breedte_px, nieuwe_hoogte), PILImage.LANCZOS)
+    buf = _io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
+
+
 def _tbl_no_borders(table):
     tbl = table._tbl
     tblPr = tbl.tblPr
@@ -397,11 +418,12 @@ def _build_item_table_and_totals(doc, data: GenerateRequest, toon_details: bool 
         if toon_details and regel.foto_base64:
             try:
                 foto_bytes = base64.b64decode(regel.foto_base64)
+                foto_bytes = _verwerk_foto_bytes(foto_bytes, item_naam=regel.item)
                 fp = row.cells[0].add_paragraph()
                 frun = fp.add_run()
                 frun.add_picture(_io.BytesIO(foto_bytes), width=Cm(2.8))
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[foto-fout] Kon foto voor '{regel.item}' niet in het Word-document plaatsen: {type(e).__name__}: {e}")
 
         cell1 = row.cells[1]
         cell1.paragraphs[0].text = ""
@@ -926,13 +948,14 @@ def build_xlsx(data: GenerateRequest) -> bytes:
         if regel.foto_base64:
             try:
                 foto_bytes = base64.b64decode(regel.foto_base64)
+                foto_bytes = _verwerk_foto_bytes(foto_bytes, item_naam=regel.item, max_breedte_px=400)
                 img = XLImage(_io.BytesIO(foto_bytes))
                 img.width = 90
                 img.height = 90
                 ws.add_image(img, f"A{row}")
                 ws.row_dimensions[row].height = 70
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[foto-fout] Kon foto voor '{regel.item}' niet in het Excel-bestand plaatsen: {type(e).__name__}: {e}")
 
         row += 1
     last_item_row = row - 1
