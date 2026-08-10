@@ -337,14 +337,20 @@ def _set_font(run, size=10, bold=False, color=None, italic=False):
 
 
 def _fix_openpyxl_lege_formule_waarde(xlsx_bytes: bytes) -> bytes:
-    """openpyxl schrijft voor elke formule-cel zonder apart gecachete waarde
-    een lege `<v></v>` weg (bijv. `<f>C6*D6</f><v></v>`). Dat is technisch
-    toegestaan volgens de spec, maar Microsoft Excel zelf accepteert dit
-    niet en meldt het bestand als beschadigd - terwijl openpyxl en
-    LibreOffice het gewoon stilzwijgend accepteren, waardoor dit bij eigen
-    tests onopgemerkt bleef. Fix: de lege tags eruit filteren na het
-    opslaan, zodat Excel de formule gewoon zelf herberekent bij het openen
-    (wat toch al gebeurt dankzij fullCalcOnLoad)."""
+    """Repareert twee losstaande openpyxl-eigenaardigheden (bevestigd aanwezig
+    in een kale, lege openpyxl 3.1.5-workbook, dus geen fout in onze eigen
+    code) die Microsoft Excel laten weigeren met "bestand is beschadigd",
+    terwijl lenient tools als openpyxl zelf en LibreOffice ze gewoon
+    negeren:
+
+    1. Formule-cellen krijgen een lege `<v></v>` mee (bijv.
+       `<f>C6*D6</f><v></v>`). Excel wil hier ofwel een geldige gecachete
+       waarde, of helemaal geen <v>-tag.
+    2. De workbook-relatie naar het werkblad gebruikt een absoluut pad
+       (`/xl/worksheets/sheet1.xml`) terwijl de andere relaties (styles,
+       theme) relatieve paden gebruiken. Die inconsistentie laten we
+       verdwijnen door ook deze relatief te maken.
+    """
     import re as _re
 
     in_buf = _io.BytesIO(xlsx_bytes)
@@ -354,6 +360,8 @@ def _fix_openpyxl_lege_formule_waarde(xlsx_bytes: bytes) -> bytes:
             data = zin.read(item.filename)
             if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml"):
                 data = _re.sub(rb"(</f>)<v></v>", rb"\1", data)
+            elif item.filename == "xl/_rels/workbook.xml.rels":
+                data = data.replace(b'Target="/xl/worksheets/', b'Target="worksheets/')
             zout.writestr(item, data)
     return out_buf.getvalue()
 
