@@ -346,22 +346,41 @@ def _fix_openpyxl_lege_formule_waarde(xlsx_bytes: bytes) -> bytes:
     1. Formule-cellen krijgen een lege `<v></v>` mee (bijv.
        `<f>C6*D6</f><v></v>`). Excel wil hier ofwel een geldige gecachete
        waarde, of helemaal geen <v>-tag.
-    2. De workbook-relatie naar het werkblad gebruikt een absoluut pad
-       (`/xl/worksheets/sheet1.xml`) terwijl de andere relaties (styles,
-       theme) relatieve paden gebruiken. Die inconsistentie laten we
-       verdwijnen door ook deze relatief te maken.
+    2. Relatiebestanden (*.rels) gebruiken soms een absoluut pad
+       (bijv. Target="/xl/drawings/drawing1.xml") terwijl andere relaties
+       in datzelfde bestand relatieve paden gebruiken. Die inconsistentie
+       lost Excel niet netjes op. We maken elk absoluut pad relatief ten
+       opzichte van de map van het onderdeel waar het .rels-bestand bij
+       hoort, ongeacht hoeveel van zulke relaties er zijn (dus dit werkt
+       ook bij meerdere foto's, extra werkbladen, etc.).
     """
     import re as _re
+    import posixpath as _pp
+
+    def _fix_rels(rels_filename: str, data: bytes) -> bytes:
+        if rels_filename == "_rels/.rels":
+            parent_dir = ""
+        else:
+            parent_dir = rels_filename.split("/_rels/", 1)[0]
+
+        def _repl(m):
+            target = m.group(1).decode()
+            if not target.startswith("/"):
+                return m.group(0)
+            rel = _pp.relpath(target.lstrip("/"), parent_dir) if parent_dir else target.lstrip("/")
+            return b'Target="' + rel.encode() + b'"'
+
+        return _re.sub(rb'Target="([^"]+)"', _repl, data)
 
     in_buf = _io.BytesIO(xlsx_bytes)
     out_buf = _io.BytesIO()
     with zipfile.ZipFile(in_buf, "r") as zin, zipfile.ZipFile(out_buf, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
             data = zin.read(item.filename)
-            if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml"):
+            if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml") and "_rels" not in item.filename:
                 data = _re.sub(rb"(</f>)<v></v>", rb"\1", data)
-            elif item.filename == "xl/_rels/workbook.xml.rels":
-                data = data.replace(b'Target="/xl/worksheets/', b'Target="worksheets/')
+            elif item.filename.endswith(".rels"):
+                data = _fix_rels(item.filename, data)
             zout.writestr(item, data)
     return out_buf.getvalue()
 
