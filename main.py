@@ -336,6 +336,28 @@ def _set_font(run, size=10, bold=False, color=None, italic=False):
         run.font.color.rgb = RGBColor.from_string(color)
 
 
+def _fix_openpyxl_lege_formule_waarde(xlsx_bytes: bytes) -> bytes:
+    """openpyxl schrijft voor elke formule-cel zonder apart gecachete waarde
+    een lege `<v></v>` weg (bijv. `<f>C6*D6</f><v></v>`). Dat is technisch
+    toegestaan volgens de spec, maar Microsoft Excel zelf accepteert dit
+    niet en meldt het bestand als beschadigd - terwijl openpyxl en
+    LibreOffice het gewoon stilzwijgend accepteren, waardoor dit bij eigen
+    tests onopgemerkt bleef. Fix: de lege tags eruit filteren na het
+    opslaan, zodat Excel de formule gewoon zelf herberekent bij het openen
+    (wat toch al gebeurt dankzij fullCalcOnLoad)."""
+    import re as _re
+
+    in_buf = _io.BytesIO(xlsx_bytes)
+    out_buf = _io.BytesIO()
+    with zipfile.ZipFile(in_buf, "r") as zin, zipfile.ZipFile(out_buf, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml"):
+                data = _re.sub(rb"(</f>)<v></v>", rb"\1", data)
+            zout.writestr(item, data)
+    return out_buf.getvalue()
+
+
 def _money(n):
     return f"€ {n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
@@ -1088,7 +1110,7 @@ def build_xlsx(data: GenerateRequest) -> bytes:
 
     buf = _io.BytesIO()
     wb.save(buf)
-    return buf.getvalue()
+    return _fix_openpyxl_lege_formule_waarde(buf.getvalue())
 
 
 @app.post("/generate-xlsx")
