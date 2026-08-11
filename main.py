@@ -610,12 +610,13 @@ def _build_offerte(doc, data: GenerateRequest):
     if data.klant and data.klant.logo_base64:
         try:
             logo_bytes = base64.b64decode(data.klant.logo_base64)
+            logo_bytes = _verwerk_foto_bytes(logo_bytes, item_naam="klantlogo")
             p = doc.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             run = p.add_run()
             run.add_picture(_io.BytesIO(logo_bytes), width=Cm(6))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[foto-fout] Kon klantlogo niet in het Word-document plaatsen: {type(e).__name__}: {e}")
 
     if data.klant and data.klant.naam:
         p = doc.add_paragraph()
@@ -947,13 +948,14 @@ def build_xlsx(data: GenerateRequest) -> bytes:
             logo_bytes = base64.b64decode(data.klant.logo_base64)
             logo_bytes = _verwerk_foto_bytes(logo_bytes, item_naam="klantlogo", max_breedte_px=400)
             pil_logo = PILImage.open(_io.BytesIO(logo_bytes))
-            schaal = min(1.0, 150 / pil_logo.width)
+            max_w, max_h = 140, 90
+            schaal = min(max_w / pil_logo.width, max_h / pil_logo.height, 1.0)
             img = XLImage(_io.BytesIO(logo_bytes))
             img.width = round(pil_logo.width * schaal)
             img.height = round(pil_logo.height * schaal)
             ws.add_image(img, f"A{row}")
-            ws.row_dimensions[row].height = max(60, img.height * 0.8)
-            row += 2
+            ws.row_dimensions[row].height = 100  # ruim boven de max. logo-hoogte, ongeacht de exacte afmeting
+            row += 1
         except Exception as e:
             print(f"[foto-fout] Kon klantlogo niet in het Excel-bestand plaatsen: {type(e).__name__}: {e}")
 
