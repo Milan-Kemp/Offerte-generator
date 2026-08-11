@@ -943,21 +943,9 @@ def build_xlsx(data: GenerateRequest) -> bytes:
 
     row = 1
 
-    if data.klant and data.klant.logo_base64:
-        try:
-            logo_bytes = base64.b64decode(data.klant.logo_base64)
-            logo_bytes = _verwerk_foto_bytes(logo_bytes, item_naam="klantlogo", max_breedte_px=400)
-            pil_logo = PILImage.open(_io.BytesIO(logo_bytes))
-            max_w, max_h = 140, 90
-            schaal = min(max_w / pil_logo.width, max_h / pil_logo.height, 1.0)
-            img = XLImage(_io.BytesIO(logo_bytes))
-            img.width = round(pil_logo.width * schaal)
-            img.height = round(pil_logo.height * schaal)
-            ws.add_image(img, f"A{row}")
-            ws.row_dimensions[row].height = 100  # ruim boven de max. logo-hoogte, ongeacht de exacte afmeting
-            row += 1
-        except Exception as e:
-            print(f"[foto-fout] Kon klantlogo niet in het Excel-bestand plaatsen: {type(e).__name__}: {e}")
+    # Klantlogo wordt bewust NIET in de Excel-export geplaatst: floating
+    # images renderen te inconsistent tussen Excel/Google Sheets/LibreOffice
+    # om betrouwbaar goed te positioneren. Word/PDF tonen het logo wel.
 
     if data.klant and data.klant.naam:
         ws.merge_cells(f"A{row}:E{row}")
