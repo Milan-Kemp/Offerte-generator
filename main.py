@@ -934,12 +934,29 @@ def build_xlsx(data: GenerateRequest) -> bytes:
     doc_type = data.document_type or "offerte"
     doc_titel = {"orderbevestiging": "Orderbevestiging", "factuur": "Factuur"}.get(doc_type, "Offerte")
     ws.title = doc_titel
+    d = data.document or DocumentGegevens()
 
     col_widths = {"A": 30, "B": 40, "C": 10, "D": 14, "E": 14}
     for col, w in col_widths.items():
         ws.column_dimensions[col].width = w
 
     row = 1
+
+    if data.klant and data.klant.logo_base64:
+        try:
+            logo_bytes = base64.b64decode(data.klant.logo_base64)
+            logo_bytes = _verwerk_foto_bytes(logo_bytes, item_naam="klantlogo", max_breedte_px=400)
+            pil_logo = PILImage.open(_io.BytesIO(logo_bytes))
+            schaal = min(1.0, 150 / pil_logo.width)
+            img = XLImage(_io.BytesIO(logo_bytes))
+            img.width = round(pil_logo.width * schaal)
+            img.height = round(pil_logo.height * schaal)
+            ws.add_image(img, f"A{row}")
+            ws.row_dimensions[row].height = max(60, img.height * 0.8)
+            row += 2
+        except Exception as e:
+            print(f"[foto-fout] Kon klantlogo niet in het Excel-bestand plaatsen: {type(e).__name__}: {e}")
+
     if data.klant and data.klant.naam:
         ws.merge_cells(f"A{row}:E{row}")
         c = ws.cell(row=row, column=1, value=f"{doc_titel} voor {data.klant.naam}")
@@ -959,6 +976,33 @@ def build_xlsx(data: GenerateRequest) -> bytes:
             c.alignment = Alignment(horizontal="center")
             row += 1
     row += 1
+
+    # Documentgegevens (ordernummer/datum/etc.) - zelfde velden per documenttype
+    # als de Word-versie, alleen platte "Label: waarde"-regels i.p.v. een tabel.
+    if doc_type == "orderbevestiging":
+        info_pairs = [
+            ("Ordernummer", d.ordernummer), ("Datum", d.datum), ("Uw referentie", d.referentie),
+            ("Projectmanager", d.projectmanager), ("Accountmanager", d.accountmanager),
+            ("Gebaseerd op offerte", d.gebaseerd_op),
+        ]
+    elif doc_type == "factuur":
+        info_pairs = [
+            ("Factuurnummer", d.factuurnummer), ("Factuurdatum", d.factuurdatum),
+            ("Vervaldatum", d.vervaldatum), ("Uw referentie", d.referentie),
+            ("Gebaseerd op", d.gebaseerd_op),
+        ]
+    else:
+        info_pairs = [("Datum", d.datum)]
+
+    for label, waarde in info_pairs:
+        if not waarde:
+            continue
+        c = ws.cell(row=row, column=1, value=f"{label}:")
+        c.font = XFont(name=XFONT_NAME, size=10, bold=True)
+        ws.cell(row=row, column=2, value=str(waarde)).font = XFont(name=XFONT_NAME, size=10)
+        row += 1
+    if any(w for _, w in info_pairs):
+        row += 1
 
     header_row = row
     headers = ["Item", "Omschrijving / specificaties", "Aantal", "Prijs p.s.", "Totaal"]
