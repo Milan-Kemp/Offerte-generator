@@ -1000,6 +1000,8 @@ def build_xlsx(data: GenerateRequest) -> bytes:
         totaal_cell.font = XFont(name=XFONT_NAME, size=10, bold=True)
         totaal_cell.number_format = '€ #,##0.00'
 
+        row += 1
+
         if regel.foto_base64:
             try:
                 foto_bytes = base64.b64decode(regel.foto_base64)
@@ -1009,10 +1011,9 @@ def build_xlsx(data: GenerateRequest) -> bytes:
                 img.height = 90
                 ws.add_image(img, f"A{row}")
                 ws.row_dimensions[row].height = 70
+                row += 1
             except Exception as e:
                 print(f"[foto-fout] Kon foto voor '{regel.item}' niet in het Excel-bestand plaatsen: {type(e).__name__}: {e}")
-
-        row += 1
     last_item_row = row - 1
 
     toon_breakdown = (doc_type == "offerte") and bool(data.toeslag_percentage)
