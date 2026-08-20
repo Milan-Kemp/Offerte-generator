@@ -181,6 +181,7 @@ from docx.enum.table import WD_ALIGN_VERTICAL
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from PIL import Image as PILImage
+import qrcode
 
 FONT_NAME = "Calibri"
 HEADER_BG = "2F5233"
@@ -193,6 +194,7 @@ REFURNITY_ADRES_KORT = ["Veerstraat 47 II", "1075 SN Amsterdam"]
 REFURNITY_BANK = "NL28 RABO 0146 2478 09"
 REFURNITY_BTW = "NL8176.80.056.B.01"
 REFURNITY_KVK = "12065660"
+REFURNITY_BIC = "RABONL2U"
 REFURNITY_MAIL = "info@ReFurnity.nl"
 REFURNITY_WEB = "www.ReFurnity.nl"
 # Eén regel, gebruikt in de footer op elke pagina van alle drie de documenttypen.
@@ -431,6 +433,14 @@ def _tbl_no_borders(table):
         el.set(qn("w:val"), "none")
         borders.append(el)
     tblPr.append(borders)
+
+
+def _row_cant_split(row):
+    """Voorkomt dat een tabelrij over een paginabreak splitst - anders kan
+    bijv. de QR-code op een andere pagina belanden dan het bijschrift."""
+    trPr = row._tr.get_or_add_trPr()
+    cant_split = OxmlElement("w:cantSplit")
+    trPr.append(cant_split)
 
 
 def _fill_info_cell(cell, pairs):
@@ -857,6 +867,33 @@ def _build_factuur_item_table(doc, data: GenerateRequest) -> float:
     return eindtotaal
 
 
+def _build_epc_qr_bytes(bedrag: float, referentie: str) -> bytes:
+    """Genereert een EPC-QR-code (SEPA Credit Transfer, standaard EPC069-12).
+    Volledig gratis en lokaal - geen externe dienst, geen API-key nodig."""
+    iban_zonder_spaties = REFURNITY_BANK.replace(" ", "")
+    regels = [
+        "BCD",
+        "002",
+        "1",
+        "SCT",
+        REFURNITY_BIC,
+        REFURNITY_NAAM,
+        iban_zonder_spaties,
+        f"EUR{bedrag:.2f}",
+        "",
+        "",
+        (referentie or "")[:140],
+    ]
+    data = "\n".join(regels)
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=8, border=2)
+    qr.add_data(data)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = _io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def _build_factuur(doc, data: GenerateRequest):
     d = data.document or DocumentGegevens()
 
@@ -944,15 +981,42 @@ def _build_factuur(doc, data: GenerateRequest):
     eindtotaal = _build_factuur_item_table(doc, data)
 
     doc.add_paragraph()
-    p = doc.add_paragraph()
+    close = doc.add_table(rows=1, cols=2)
+    close.autofit = False
+    close.columns[0].width = Cm(11)
+    close.columns[1].width = Cm(5)
+    _row_cant_split(close.rows[0])
+    tekst_cell, qr_cell = close.rows[0].cells
+
+    tekst_cell.paragraphs[0].text = ""
     vervaldatum_tekst = f"vóór {d.vervaldatum} " if d.vervaldatum else ""
     factuurnr_tekst = f", onder vermelding van de omschrijving {d.factuurnummer}" if d.factuurnummer else ""
-    run = p.add_run(
+    run = tekst_cell.paragraphs[0].add_run(
         f"We verzoeken u vriendelijk het bovenstaande bedrag van {_money(eindtotaal)} {vervaldatum_tekst}"
         f"te voldoen op onze bankrekening{factuurnr_tekst}. "
         "Voor vragen kunt u contact opnemen per e-mail via Facturatie@ReFurnity.nl"
     )
     _set_font(run, size=9, color="555555")
+
+    qr_cell.paragraphs[0].text = ""
+    qr_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+    try:
+        qr_bytes = _build_epc_qr_bytes(eindtotaal, d.factuurnummer or d.referentie or "")
+        kop = qr_cell.paragraphs[0]
+        run = kop.add_run("Betaal QR-code")
+        _set_font(run, size=9, bold=True)
+        sub = qr_cell.add_paragraph()
+        run = sub.add_run(
+            "Scan met een bankieren-app om de overboeking te starten. "
+            "Let op: niet alle banken ondersteunen de EPC QR"
+        )
+        _set_font(run, size=7, color="777777")
+        img_p = qr_cell.add_paragraph()
+        img_run = img_p.add_run()
+        img_run.add_picture(_io.BytesIO(qr_bytes), width=Cm(2.4))
+    except Exception as e:
+        print(f"[qr-fout] Kon geen betaal-QR genereren: {type(e).__name__}: {e}")
+    _tbl_no_borders(close)
 
 
 def build_docx_template_1(data: GenerateRequest) -> bytes:
