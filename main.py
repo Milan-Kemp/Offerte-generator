@@ -459,6 +459,28 @@ def _fill_info_cell(cell, pairs):
         cell.paragraphs[0].add_run("")
 
 
+def _pas_toeslag_korting_toe_op_regel(regel: "Regel", data: "GenerateRequest"):
+    """Rekent toeslag/korting stilzwijgend door in de per-regel prijs, zodat
+    de zichtbare regels samen exact optellen tot het eindtotaal - zonder dat
+    er ergens een aparte 'toeslag' of 'korting'-regel getoond wordt. Retourneert
+    een (prijs_per_stuk, totaal)-tuple met de aangepaste, te tonen bedragen."""
+    multiplier = 1.0
+    if data.toeslag_percentage:
+        multiplier *= 1 + (data.toeslag_percentage / 100)
+    if data.korting_percentage:
+        multiplier *= 1 - (data.korting_percentage / 100)
+
+    if multiplier == 1.0:
+        return regel.prijs_per_stuk, regel.totaal
+
+    prijs = round(regel.prijs_per_stuk * multiplier, 2) if regel.prijs_per_stuk is not None else None
+    if prijs is not None and regel.aantal is not None:
+        totaal = round(prijs * regel.aantal, 2)
+    else:
+        totaal = round(regel.totaal * multiplier, 2)
+    return prijs, totaal
+
+
 def _build_item_table_and_totals(doc, data: GenerateRequest, toon_details: bool = True, toon_levertijd: bool = False) -> float:
     """Bouwt de regel-tabel + totalenblok + aanbetalingstermijnen + opmerkingen.
     Gedeeld door offerte, orderbevestiging en factuur zodat ze niet uit elkaar
@@ -486,6 +508,7 @@ def _build_item_table_and_totals(doc, data: GenerateRequest, toon_details: bool 
     grand_total = 0.0
     for idx, regel in enumerate(data.regels):
         row = table.add_row()
+        _row_cant_split(row)
         shade = idx % 2 == 1
         for i, w in enumerate(widths):
             row.cells[i].width = w
@@ -539,17 +562,19 @@ def _build_item_table_and_totals(doc, data: GenerateRequest, toon_details: bool 
         run = p.add_run(str(int(regel.aantal)) if regel.aantal is not None else "")
         _set_font(run)
 
+        weergave_prijs, weergave_totaal = _pas_toeslag_korting_toe_op_regel(regel, data)
+
         p = row.cells[3].paragraphs[0]
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        run = p.add_run(_money(regel.prijs_per_stuk) if regel.prijs_per_stuk is not None else "")
+        run = p.add_run(_money(weergave_prijs) if weergave_prijs is not None else "")
         _set_font(run)
 
         p = row.cells[4].paragraphs[0]
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        run = p.add_run(_money(regel.totaal))
+        run = p.add_run(_money(weergave_totaal))
         _set_font(run, bold=True)
 
-        grand_total += regel.totaal
+        grand_total += weergave_totaal
 
     def _add_summary_row(label, bedrag, bold=True, shade_bg=None):
         row = table.add_row()
@@ -566,38 +591,25 @@ def _build_item_table_and_totals(doc, data: GenerateRequest, toon_details: bool 
         run = p.add_run(_money(bedrag))
         _set_font(run, size=11 if bold else 10, bold=bold)
 
-    subtotaal = grand_total
-    toeslag_percentage = data.toeslag_percentage or 0
-    toeslag_bedrag = subtotaal * (toeslag_percentage / 100) if toeslag_percentage else 0.0
-    na_toeslag = subtotaal + toeslag_bedrag
-
-    korting_percentage = data.korting_percentage or 0
-    korting_bedrag = na_toeslag * (korting_percentage / 100) if korting_percentage else 0.0
-    totaal_excl_btw = na_toeslag - korting_bedrag
+    # grand_total is hier al de som van de per-regel doorberekende bedragen
+    # (toeslag/korting zit al stilzwijgend in elke regel verwerkt), dus dat
+    # is meteen het totaal excl. BTW - geen aparte toeslag/korting-optelling
+    # meer nodig.
+    totaal_excl_btw = grand_total
 
     heeft_btw = bool(data.btw_percentage)
-    toon_toeslag_breakdown = toon_details and bool(toeslag_bedrag)
-    # Korting wordt, net als Toeslag, nergens als aparte regel getoond -
-    # alleen stilzwijgend verwerkt in het eindtotaal.
-    heeft_enige_breakdown = toon_toeslag_breakdown
+    # Toeslag/korting worden nergens als aparte regel getoond - alleen
+    # stilzwijgend per regel verwerkt in de getoonde prijs. Bewuste keuze, geen bug.
 
-    if not heeft_enige_breakdown and not heeft_btw:
+    if not heeft_btw:
         _add_summary_row("TOTAAL", totaal_excl_btw, shade_bg=TOTAL_BG)
         eindtotaal = totaal_excl_btw
     else:
-        if toon_toeslag_breakdown:
-            _add_summary_row("Subtotaal", subtotaal, bold=False)
-            _add_summary_row(f"Toeslag ({toeslag_percentage:g}%)", toeslag_bedrag, bold=False)
-
-        if heeft_btw:
-            _add_summary_row("Totaal excl. BTW", totaal_excl_btw, bold=False)
-            btw_bedrag = totaal_excl_btw * (data.btw_percentage / 100)
-            _add_summary_row(f"BTW ({data.btw_percentage:g}%)", btw_bedrag, bold=False)
-            eindtotaal = totaal_excl_btw + btw_bedrag
-            _add_summary_row("Totaal incl. BTW", eindtotaal, shade_bg=TOTAL_BG)
-        else:
-            eindtotaal = totaal_excl_btw
-            _add_summary_row("TOTAAL", eindtotaal, shade_bg=TOTAL_BG)
+        _add_summary_row("Totaal excl. BTW", totaal_excl_btw, bold=False)
+        btw_bedrag = totaal_excl_btw * (data.btw_percentage / 100)
+        _add_summary_row(f"BTW ({data.btw_percentage:g}%)", btw_bedrag, bold=False)
+        eindtotaal = totaal_excl_btw + btw_bedrag
+        _add_summary_row("Totaal incl. BTW", eindtotaal, shade_bg=TOTAL_BG)
 
     # Let op: algemene_opmerkingen worden bewust NIET in het gegenereerde
     # document geschreven. Dit veld blijft alleen zichtbaar in Lovable zelf
@@ -805,6 +817,7 @@ def _build_factuur_item_table(doc, data: GenerateRequest) -> float:
     grand_total = 0.0
     for idx, regel in enumerate(data.regels):
         row = table.add_row()
+        _row_cant_split(row)
         shade = idx % 2 == 1
         for i, w in enumerate(widths):
             row.cells[i].width = w
@@ -821,14 +834,16 @@ def _build_factuur_item_table(doc, data: GenerateRequest) -> float:
             run = par.add_run(regel.omschrijving)
             _set_font(run)
 
+        weergave_prijs, weergave_totaal = _pas_toeslag_korting_toe_op_regel(regel, data)
+
         p = row.cells[1].paragraphs[0]
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        run = p.add_run(_money(regel.prijs_per_stuk) if regel.prijs_per_stuk is not None else "")
+        run = p.add_run(_money(weergave_prijs) if weergave_prijs is not None else "")
         _set_font(run)
 
         p = row.cells[2].paragraphs[0]
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        run = p.add_run(_money(regel.totaal))
+        run = p.add_run(_money(weergave_totaal))
         _set_font(run, bold=True)
 
         p = row.cells[3].paragraphs[0]
@@ -836,7 +851,7 @@ def _build_factuur_item_table(doc, data: GenerateRequest) -> float:
         run = p.add_run(f"{btw_percentage:g}%" if btw_percentage else "")
         _set_font(run)
 
-        grand_total += regel.totaal
+        grand_total += weergave_totaal
 
     def _add_summary_row(label, bedrag, bold=True, shade_bg=None):
         row = table.add_row()
@@ -1211,26 +1226,30 @@ def build_xlsx(data: GenerateRequest) -> bytes:
             omschrijving_delen.append(f"• {spec}")
         if regel.opmerking:
             omschrijving_delen.append(regel.opmerking)
+        if doc_type == "orderbevestiging" and regel.levertijd:
+            omschrijving_delen.append(f"Levertijd: {regel.levertijd}")
 
         ws.cell(row=row, column=1, value=regel.item).font = XFont(name=XFONT_NAME, size=10, bold=True)
         c = ws.cell(row=row, column=2, value="\n".join(omschrijving_delen))
         c.font = XFont(name=XFONT_NAME, size=10)
         c.alignment = Alignment(wrap_text=True, vertical="top")
 
+        weergave_prijs, weergave_totaal = _pas_toeslag_korting_toe_op_regel(regel, data)
+
         if regel.aantal is not None:
             ws.cell(row=row, column=3, value=regel.aantal).font = XFont(name=XFONT_NAME, size=10)
-        if regel.prijs_per_stuk is not None:
-            pc = ws.cell(row=row, column=4, value=regel.prijs_per_stuk)
+        if weergave_prijs is not None:
+            pc = ws.cell(row=row, column=4, value=weergave_prijs)
             pc.font = XFont(name=XFONT_NAME, size=10)
             pc.number_format = '€ #,##0.00'
 
         totaal_cell = ws.cell(row=row, column=5)
-        if regel.aantal is not None and regel.prijs_per_stuk is not None:
+        if regel.aantal is not None and weergave_prijs is not None:
             col_c = get_column_letter(3)
             col_d = get_column_letter(4)
             totaal_cell.value = f"={col_c}{row}*{col_d}{row}"
         else:
-            totaal_cell.value = regel.totaal
+            totaal_cell.value = weergave_totaal
         totaal_cell.font = XFont(name=XFONT_NAME, size=10, bold=True)
         totaal_cell.number_format = '€ #,##0.00'
 
@@ -1250,73 +1269,24 @@ def build_xlsx(data: GenerateRequest) -> bytes:
                 print(f"[foto-fout] Kon foto voor '{regel.item}' niet in het Excel-bestand plaatsen: {type(e).__name__}: {e}")
     last_item_row = row - 1
 
-    toon_breakdown = (doc_type == "offerte") and bool(data.toeslag_percentage)
+    # Toeslag/korting zitten al stilzwijgend verwerkt in de prijs per regel
+    # (zie _pas_toeslag_korting_toe_op_regel hierboven), dus hier is de som
+    # van de regels meteen het totaal excl. BTW - geen aparte toeslag/kortingsregel
+    # of vermenigvuldigfactor meer nodig.
+    row += 1
+    subtotaal_row = row
+    ws.cell(row=row, column=4, value="Subtotaal").font = XFont(name=XFONT_NAME, size=10)
+    ws.cell(row=row, column=4).alignment = Alignment(horizontal="right")
+    c = ws.cell(row=row, column=5, value=f"=SUM(E{first_item_row}:E{last_item_row})")
+    c.font = XFont(name=XFONT_NAME, size=10, bold=True)
+    c.number_format = '€ #,##0.00'
+    row += 1
+    basis_row = subtotaal_row
 
-    subtotaal_row = None
-    if toon_breakdown:
-        row += 1
-        subtotaal_row = row
-        ws.cell(row=row, column=4, value="Subtotaal").font = XFont(name=XFONT_NAME, size=10)
-        ws.cell(row=row, column=4).alignment = Alignment(horizontal="right")
-        c = ws.cell(row=row, column=5, value=f"=SUM(E{first_item_row}:E{last_item_row})")
-        c.font = XFont(name=XFONT_NAME, size=10, bold=True)
-        c.number_format = '€ #,##0.00'
-        row += 1
-
-    excl_btw_row = None
-    if toon_breakdown:
-        toeslag_row = row
-        ws.cell(row=row, column=4, value=f"Toeslag ({data.toeslag_percentage:g}%)").alignment = Alignment(horizontal="right")
-        ws.cell(row=row, column=4).font = XFont(name=XFONT_NAME, size=10)
-        c = ws.cell(row=row, column=5, value=f"=E{subtotaal_row}*{data.toeslag_percentage / 100}")
-        c.font = XFont(name=XFONT_NAME, size=10)
-        c.number_format = '€ #,##0.00'
-        row += 1
-
-        excl_btw_row = row
-        ws.cell(row=row, column=4, value="Totaal excl. BTW").alignment = Alignment(horizontal="right")
-        ws.cell(row=row, column=4).font = XFont(name=XFONT_NAME, size=10)
-        c = ws.cell(row=row, column=5, value=f"=E{subtotaal_row}+E{toeslag_row}")
-        c.font = XFont(name=XFONT_NAME, size=10)
-        c.number_format = '€ #,##0.00'
-        row += 1
-    elif data.toeslag_percentage:
-        # Toeslag blijft verwerkt in het totaal, maar wordt niet als aparte regel
-        # (en niet als losse Subtotaal) getoond aan de klant bij orderbevestiging/factuur.
-        row += 1
-        excl_btw_row = row
-        ws.cell(row=row, column=4, value="Totaal excl. BTW").alignment = Alignment(horizontal="right")
-        ws.cell(row=row, column=4).font = XFont(name=XFONT_NAME, size=10)
-        c = ws.cell(row=row, column=5, value=f"=SUM(E{first_item_row}:E{last_item_row})*(1+{data.toeslag_percentage / 100})")
-        c.font = XFont(name=XFONT_NAME, size=10)
-        c.number_format = '€ #,##0.00'
-        row += 1
-
-    basis_row = excl_btw_row or subtotaal_row
-    if basis_row is None:
-        # Geen toeslag: basis voor eventuele BTW-berekening is direct de som van de regels.
-        row += 1
-        subtotaal_row = row
-        ws.cell(row=row, column=4, value="Subtotaal").font = XFont(name=XFONT_NAME, size=10)
-        ws.cell(row=row, column=4).alignment = Alignment(horizontal="right")
-        c = ws.cell(row=row, column=5, value=f"=SUM(E{first_item_row}:E{last_item_row})")
-        c.font = XFont(name=XFONT_NAME, size=10, bold=True)
-        c.number_format = '€ #,##0.00'
-        row += 1
-        basis_row = subtotaal_row
-
-    if data.korting_percentage:
-        # Korting wordt, net als Toeslag, nergens als aparte regel getoond -
-        # alleen stilzwijgend verwerkt door de bestaande basisregel te
-        # vermenigvuldigen met de kortingsfactor, zonder een nieuwe rij.
-        basis_cell = ws.cell(row=basis_row, column=5)
-        bestaande_formule = basis_cell.value
-        basis_cell.value = f"=({bestaande_formule[1:]})*(1-{data.korting_percentage / 100})"
-        # Het label mag na verwerking van de korting niet meer "Subtotaal"
-        # heten, want dat bedrag klopt dan niet meer met de losse regeltotalen.
-        label_cell = ws.cell(row=basis_row, column=4)
-        if label_cell.value == "Subtotaal":
-            label_cell.value = "Totaal excl. BTW" if data.btw_percentage else "TOTAAL"
+    # Toeslag/korting zitten al stilzwijgend verwerkt in de prijs per regel
+    # (zie _pas_toeslag_korting_toe_op_regel), dus hier alleen het label zetten.
+    label_cell = ws.cell(row=basis_row, column=4)
+    label_cell.value = "Totaal excl. BTW" if data.btw_percentage else "TOTAAL"
 
     if data.btw_percentage:
         btw_row = row
