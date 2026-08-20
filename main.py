@@ -640,7 +640,7 @@ def _add_page_header_logo(section):
     hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     hp.text = ""
     hrun = hp.add_run()
-    hrun.add_picture(REFURNITY_LOGO_PATH, width=Cm(2.8))
+    hrun.add_picture(REFURNITY_LOGO_PATH, width=Cm(4.2))
 
 
 def _add_facturatieschema(doc):
@@ -654,12 +654,35 @@ def _add_facturatieschema(doc):
         _set_font(run, size=10, bold=(i == 0))
 
 
+def _bereken_vervaldatum_plus_30(datum_tekst: str) -> Optional[str]:
+    """Telt 30 dagen op bij een datum-string, en geeft het resultaat terug in
+    hetzelfde format als de invoer. Ondersteunt zowel ISO (2026-08-20) als
+    NL-notatie (20-08-2026). Geeft None terug als het format niet herkend wordt,
+    zodat de aanroeper dan gewoon niets invult i.p.v. een gok te doen."""
+    import datetime
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            d = datetime.datetime.strptime(datum_tekst.strip(), fmt)
+            nieuwe_datum = d + datetime.timedelta(days=30)
+            return nieuwe_datum.strftime(fmt)
+        except (ValueError, AttributeError):
+            continue
+    return None
+
+
 def _build_offerte(doc, data: GenerateRequest):
     section = doc.sections[0]
     _add_page_header_logo(section)
     _add_page_footer(section)
 
     d = data.document or DocumentGegevens()
+    # Vangnet: als er wel een offertedatum is maar geen vervaldatum (geldig-tot),
+    # vul die automatisch aan met datum + 30 dagen - Peter's regel. Lovable mag
+    # dit ook al zelf voorinvullen, maar zonder dat blijft dit werken.
+    if not d.vervaldatum and d.datum:
+        auto_vervaldatum = _bereken_vervaldatum_plus_30(d.datum)
+        if auto_vervaldatum:
+            d.vervaldatum = auto_vervaldatum
 
     if data.klant and data.klant.logo_base64:
         try:
