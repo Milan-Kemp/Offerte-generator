@@ -188,18 +188,28 @@ SHADE_BG = "F2F2F2"
 TOTAL_BG = "E4E4E4"
 REFURNITY_GREEN = "8DC63F"
 REFURNITY_LOGO_PATH = os.path.join(os.path.dirname(__file__), "refurnity_logo.png")
-REFURNITY_ADDRESS_LINES = [
-    "Refurnity BV",
-    "Veerstraat 47 II, 1075 SN Amsterdam",
-    "Telefoon 0621502536",
-    "Mail info@ReFurnity.nl",
-    "www.ReFurnity.nl",
-]
 REFURNITY_NAAM = "ReFurnity BV"
 REFURNITY_ADRES_KORT = ["Veerstraat 47 II", "1075 SN Amsterdam"]
 REFURNITY_BANK = "NL28 RABO 0146 2478 09"
-REFURNITY_BTW = "NL8176.80.056.B01"
+REFURNITY_BTW = "NL8176.80.056.B.01"
 REFURNITY_KVK = "12065660"
+REFURNITY_MAIL = "info@ReFurnity.nl"
+REFURNITY_WEB = "www.ReFurnity.nl"
+# Eén regel, gebruikt in de footer op elke pagina van alle drie de documenttypen.
+REFURNITY_FOOTER_TEKST = (
+    f"{REFURNITY_NAAM}  ·  Rekeningnummer: IBAN {REFURNITY_BANK}  ·  "
+    f"{REFURNITY_ADRES_KORT[0]}, {REFURNITY_ADRES_KORT[1]}  ·  "
+    f"K.v.K.-nummer: {REFURNITY_KVK}  ·  Mail: {REFURNITY_MAIL}  ·  "
+    f"BTW nummer: {REFURNITY_BTW}  ·  Web: {REFURNITY_WEB}"
+)
+# Vaste facturatieschema-tekst (Moneybird-voorbeeld van Peter), altijd getoond
+# onderaan offerte en orderbevestiging, ongeacht de ordertotaal.
+FACTURATIESCHEMA_REGELS = [
+    "Boven een orderwaarde van € 1000,- hanteren wij het volgende facturatieschema",
+    "50% - bij opdracht",
+    "40% - op dag van levering",
+    "10% - 30 dagen na levering",
+]
 
 
 def _leeg_naar_none(v):
@@ -220,6 +230,7 @@ class Regel(BaseModel):
     totaal: float
     waarschuwing: Optional[str] = None
     opmerking: Optional[str] = None
+    levertijd: Optional[str] = None  # bijv. "week 42" of "4 weken", per item, alleen getoond bij orderbevestiging
     foto_base64: Optional[str] = None  # optionele productfoto, ruwe base64 zonder data:-prefix
 
     @field_validator("aantal", "prijs_per_stuk", mode="before")
@@ -265,6 +276,8 @@ class AanbetalingTermijn(BaseModel):
 
 
 class DocumentGegevens(BaseModel):
+    # Offerte
+    offertenummer: Optional[str] = None
     # Orderbevestiging
     ordernummer: Optional[str] = None
     projectmanager: Optional[str] = None
@@ -274,9 +287,9 @@ class DocumentGegevens(BaseModel):
     # Factuur
     factuurnummer: Optional[str] = None
     factuurdatum: Optional[str] = None
-    vervaldatum: Optional[str] = None
-    # Gedeeld
+    # Gedeeld - vervaldatum is bij offerte "geldig tot", bij factuur de betaaldatum
     datum: Optional[str] = None
+    vervaldatum: Optional[str] = None
     referentie: Optional[str] = None  # "Uw referentie" / kenmerk
     gebaseerd_op: Optional[str] = None  # verwijzing naar offerte- of ordernummer
 
@@ -436,7 +449,7 @@ def _fill_info_cell(cell, pairs):
         cell.paragraphs[0].add_run("")
 
 
-def _build_item_table_and_totals(doc, data: GenerateRequest, toon_details: bool = True) -> float:
+def _build_item_table_and_totals(doc, data: GenerateRequest, toon_details: bool = True, toon_levertijd: bool = False) -> float:
     """Bouwt de regel-tabel + totalenblok + aanbetalingstermijnen + opmerkingen.
     Gedeeld door offerte, orderbevestiging en factuur zodat ze niet uit elkaar
     kunnen groeien. Retourneert het eindtotaal (incl. eventuele BTW/toeslag).
@@ -503,6 +516,11 @@ def _build_item_table_and_totals(doc, data: GenerateRequest, toon_details: bool 
                 _set_font(run, size=9, color="555555")
                 run.italic = True
                 first = False
+        if toon_levertijd and regel.levertijd:
+            par = cell1.paragraphs[0] if first else cell1.add_paragraph()
+            run = par.add_run(f"Levertijd: {regel.levertijd}")
+            _set_font(run, size=9, color="555555")
+            first = False
         if first:
             cell1.paragraphs[0].add_run("")
 
@@ -571,23 +589,6 @@ def _build_item_table_and_totals(doc, data: GenerateRequest, toon_details: bool 
             eindtotaal = totaal_excl_btw
             _add_summary_row("TOTAAL", eindtotaal, shade_bg=TOTAL_BG)
 
-    if toon_details and data.aanbetaling_termijnen:
-        doc.add_paragraph()
-        p = doc.add_paragraph()
-        run = p.add_run("Betaaltermijnen")
-        _set_font(run, size=11, bold=True)
-        termijnen = data.aanbetaling_termijnen
-        lopend_totaal = 0.0
-        for idx, termijn in enumerate(termijnen):
-            if idx == len(termijnen) - 1:
-                bedrag = round(eindtotaal - lopend_totaal, 2)
-            else:
-                bedrag = round(eindtotaal * (termijn.percentage / 100), 2)
-                lopend_totaal += bedrag
-            p = doc.add_paragraph()
-            run = p.add_run(f"{termijn.label}: {termijn.percentage:g}% = {_money(bedrag)}")
-            _set_font(run, size=10)
-
     # Let op: algemene_opmerkingen worden bewust NIET in het gegenereerde
     # document geschreven. Dit veld blijft alleen zichtbaar in Lovable zelf
     # (via de API-respons van de parse-stap), niet in wat de klant ontvangt.
@@ -595,75 +596,122 @@ def _build_item_table_and_totals(doc, data: GenerateRequest, toon_details: bool 
     return eindtotaal
 
 
+def _add_page_footer(section):
+    """Zet het vaste ReFurnity-infoblok in de footer, zodat het op elke
+    pagina van het document verschijnt (i.p.v. als losse tekst in de body,
+    die na een paginabreak of tabel-overloop verdwijnt)."""
+    footer = section.footer
+    fp = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+    fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    fp.text = ""
+    run = fp.add_run(REFURNITY_FOOTER_TEKST)
+    _set_font(run, size=8, color="666666")
+
+
+def _add_page_header_logo(section):
+    """Zet het ReFurnity-logo rechtsboven in de header, hetzelfde op elk
+    van de drie documenttypen."""
+    if not os.path.exists(REFURNITY_LOGO_PATH):
+        return
+    header = section.header
+    hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+    hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    hp.text = ""
+    hrun = hp.add_run()
+    hrun.add_picture(REFURNITY_LOGO_PATH, width=Cm(2.8))
+
+
+def _add_facturatieschema(doc):
+    """Vaste facturatieschema-tekst (Moneybird-voorbeeld), altijd getoond
+    onderaan offerte en orderbevestiging - niet afhankelijk van de ordertotaal,
+    Peter's eigen voorbeeld toont 'm ook bij een order van €682."""
+    doc.add_paragraph()
+    for i, regel in enumerate(FACTURATIESCHEMA_REGELS):
+        p = doc.add_paragraph()
+        run = p.add_run(regel)
+        _set_font(run, size=10, bold=(i == 0))
+
+
 def _build_offerte(doc, data: GenerateRequest):
     section = doc.sections[0]
+    _add_page_header_logo(section)
+    _add_page_footer(section)
 
-    section.different_first_page_header_footer = True
-    if os.path.exists(REFURNITY_LOGO_PATH):
-        header = section.header
-        hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
-        hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        hrun = hp.add_run()
-        hrun.add_picture(REFURNITY_LOGO_PATH, width=Cm(2.8))
-        section.first_page_header.paragraphs[0].text = ""
+    d = data.document or DocumentGegevens()
 
     if data.klant and data.klant.logo_base64:
         try:
             logo_bytes = base64.b64decode(data.klant.logo_base64)
             logo_bytes = _verwerk_foto_bytes(logo_bytes, item_naam="klantlogo")
             p = doc.add_paragraph()
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
             run = p.add_run()
-            run.add_picture(_io.BytesIO(logo_bytes), width=Cm(6))
+            run.add_picture(_io.BytesIO(logo_bytes), width=Cm(3.5))
         except Exception as e:
             print(f"[foto-fout] Kon klantlogo niet in het Word-document plaatsen: {type(e).__name__}: {e}")
 
     if data.klant and data.klant.naam:
         p = doc.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = p.add_run(f"Offerte voor {data.klant.naam}")
-        _set_font(run, size=18, bold=True)
-        if data.klant.adres:
-            p2 = doc.add_paragraph()
-            p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run2 = p2.add_run(data.klant.adres)
-            _set_font(run2, size=10)
+        run = p.add_run(data.klant.naam)
+        _set_font(run, size=11, bold=True)
         if data.klant.contact:
+            p2 = doc.add_paragraph()
+            run2 = p2.add_run(f"T.a.v. {data.klant.contact}")
+            _set_font(run2, size=10)
+        if data.klant.adres:
             p3 = doc.add_paragraph()
-            p3.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run3 = p3.add_run(data.klant.contact)
+            run3 = p3.add_run(data.klant.adres)
             _set_font(run3, size=10)
 
     doc.add_paragraph()
-    if os.path.exists(REFURNITY_LOGO_PATH):
-        p = doc.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = p.add_run()
-        run.add_picture(REFURNITY_LOGO_PATH, width=Cm(7))
-    for line in REFURNITY_ADDRESS_LINES:
-        p = doc.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = p.add_run(line)
-        _set_font(run, size=9, color="666666")
-
-    doc.add_page_break()
 
     title = doc.add_paragraph()
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = title.add_run("Offerte")
-    _set_font(run, size=18, bold=True)
+    run = title.add_run(f"Offerte {d.offertenummer or ''}".strip())
+    _set_font(run, size=20, bold=True, color=HEADER_BG)
+
+    if d.referentie:
+        p = doc.add_paragraph()
+        run = p.add_run("Kenmerk: ")
+        _set_font(run, size=10, bold=True)
+        run2 = p.add_run(d.referentie)
+        _set_font(run2, size=10)
+
+    outer = doc.add_table(rows=1, cols=2)
+    outer.autofit = False
+    outer.columns[0].width = Cm(5.5)
+    outer.columns[1].width = Cm(5.5)
+    c1, c2 = outer.rows[0].cells
+    _fill_info_cell(c1, [("Offertedatum:", d.datum)])
+    _fill_info_cell(c2, [("Vervaldatum:", d.vervaldatum)])
+    _tbl_no_borders(outer)
+
+    doc.add_paragraph()
+    if data.klant and data.klant.contact:
+        p = doc.add_paragraph()
+        run = p.add_run(f"Beste {data.klant.contact},")
+        _set_font(run, size=10)
+    p = doc.add_paragraph()
+    run = p.add_run(
+        f"Hierbij sturen wij u onze prijsopgave {d.offertenummer or ''} voor onderstaande "
+        "diensten en/of artikelen.".replace("  ", " ")
+    )
+    _set_font(run, size=10)
+    doc.add_paragraph()
 
     _build_item_table_and_totals(doc, data)
+    _add_facturatieschema(doc)
+
+    doc.add_paragraph()
+    for line in ["We kijken uit naar uw reactie!", "Met vriendelijke groet,", "ReFurnity"]:
+        p = doc.add_paragraph()
+        run = p.add_run(line)
+        _set_font(run, size=10)
 
 
 def _build_orderbevestiging(doc, data: GenerateRequest):
     section = doc.sections[0]
-    if os.path.exists(REFURNITY_LOGO_PATH):
-        header = section.header
-        hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
-        hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        hrun = hp.add_run()
-        hrun.add_picture(REFURNITY_LOGO_PATH, width=Cm(2.8))
+    _add_page_header_logo(section)
+    _add_page_footer(section)
 
     d = data.document or DocumentGegevens()
 
@@ -704,7 +752,8 @@ def _build_orderbevestiging(doc, data: GenerateRequest):
     _tbl_no_borders(outer)
 
     doc.add_paragraph()
-    _build_item_table_and_totals(doc, data, toon_details=False)
+    _build_item_table_and_totals(doc, data, toon_details=False, toon_levertijd=True)
+    _add_facturatieschema(doc)
 
     doc.add_paragraph()
     for label, value in [("Levertermijn:", d.levertermijn), ("Betalingstermijn:", d.betalingstermijn)]:
@@ -719,6 +768,93 @@ def _build_orderbevestiging(doc, data: GenerateRequest):
     p = doc.add_paragraph()
     run = p.add_run("Hartelijk dank voor uw bestelling.")
     _set_font(run, size=10, italic=True, color=REFURNITY_GREEN)
+
+
+def _build_factuur_item_table(doc, data: GenerateRequest) -> float:
+    """Aparte tabelopbouw voor de factuur, matcht het Moneybird-voorbeeld:
+    kolommen Omschrijving/Bedrag/Totaal/Btw (geen aparte Item/Aantal-kolom
+    zoals bij offerte/orderbevestiging), 'x' als aantal-notatie ingebed in
+    de omschrijving, en Btw als percentage per regel."""
+    table = doc.add_table(rows=1, cols=4)
+    table.autofit = False
+    widths = [Cm(10), Cm(2.8), Cm(2.8), Cm(1.4)]
+    headers = ["Omschrijving", "Bedrag", "Totaal", "Btw"]
+
+    hdr_cells = table.rows[0].cells
+    for i, (htext, w) in enumerate(zip(headers, widths)):
+        hdr_cells[i].width = w
+        _shade_cell(hdr_cells[i], HEADER_BG)
+        hdr_cells[i].vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+        p = hdr_cells[i].paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT if i > 0 else WD_ALIGN_PARAGRAPH.LEFT
+        run = p.add_run(htext)
+        _set_font(run, size=10, bold=True, color="FFFFFF")
+    _repeat_header(table.rows[0])
+
+    btw_percentage = data.btw_percentage if data.btw_percentage is not None else 21
+    grand_total = 0.0
+    for idx, regel in enumerate(data.regels):
+        row = table.add_row()
+        shade = idx % 2 == 1
+        for i, w in enumerate(widths):
+            row.cells[i].width = w
+            if shade:
+                _shade_cell(row.cells[i], SHADE_BG)
+
+        cell0 = row.cells[0]
+        cell0.paragraphs[0].text = ""
+        aantal_tekst = f"{regel.aantal:g} x " if regel.aantal is not None else ""
+        run = cell0.paragraphs[0].add_run(f"{aantal_tekst}{regel.item}")
+        _set_font(run, bold=True)
+        if regel.omschrijving:
+            par = cell0.add_paragraph()
+            run = par.add_run(regel.omschrijving)
+            _set_font(run)
+
+        p = row.cells[1].paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        run = p.add_run(_money(regel.prijs_per_stuk) if regel.prijs_per_stuk is not None else "")
+        _set_font(run)
+
+        p = row.cells[2].paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        run = p.add_run(_money(regel.totaal))
+        _set_font(run, bold=True)
+
+        p = row.cells[3].paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        run = p.add_run(f"{btw_percentage:g}%" if btw_percentage else "")
+        _set_font(run)
+
+        grand_total += regel.totaal
+
+    def _add_summary_row(label, bedrag, bold=True, shade_bg=None):
+        row = table.add_row()
+        row.cells[0].merge(row.cells[2])
+        if shade_bg:
+            _shade_cell(row.cells[0], shade_bg)
+            _shade_cell(row.cells[3], shade_bg)
+        p = row.cells[0].paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        run = p.add_run(label)
+        _set_font(run, size=11 if bold else 10, bold=bold)
+        p = row.cells[3].paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        run = p.add_run(_money(bedrag))
+        _set_font(run, size=11 if bold else 10, bold=bold)
+
+    subtotaal = grand_total
+    _add_summary_row("Subtotaal", subtotaal, bold=False)
+    if btw_percentage:
+        btw_bedrag = subtotaal * (btw_percentage / 100)
+        eindtotaal = subtotaal + btw_bedrag
+        _add_summary_row(f"{btw_percentage:g}% btw", btw_bedrag, bold=False)
+        _add_summary_row("Totaal", eindtotaal, shade_bg=TOTAL_BG)
+    else:
+        eindtotaal = subtotaal
+        _add_summary_row("Totaal", eindtotaal, shade_bg=TOTAL_BG)
+
+    return eindtotaal
 
 
 def _build_factuur(doc, data: GenerateRequest):
@@ -741,7 +877,7 @@ def _build_factuur(doc, data: GenerateRequest):
     info_cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
     info_lines = [REFURNITY_NAAM] + REFURNITY_ADRES_KORT + [
         f"Bank: {REFURNITY_BANK}",
-        f"BTW: {REFURNITY_BTW}",
+        f"Btw: {REFURNITY_BTW}",
         f"KVK: {REFURNITY_KVK}",
     ]
     for i, line in enumerate(info_lines):
@@ -797,24 +933,24 @@ def _build_factuur(doc, data: GenerateRequest):
 
     outer2 = doc.add_table(rows=1, cols=2)
     outer2.autofit = False
-    outer2.columns[0].width = Cm(4)
-    outer2.columns[1].width = Cm(4)
+    outer2.columns[0].width = Cm(5.5)
+    outer2.columns[1].width = Cm(5.5)
     c1, c2 = outer2.rows[0].cells
     _fill_info_cell(c1, [("Factuurdatum:", d.factuurdatum)])
     _fill_info_cell(c2, [("Vervaldatum:", d.vervaldatum)])
     _tbl_no_borders(outer2)
 
     doc.add_paragraph()
-    eindtotaal = _build_item_table_and_totals(doc, data, toon_details=False)
+    eindtotaal = _build_factuur_item_table(doc, data)
 
     doc.add_paragraph()
     p = doc.add_paragraph()
     vervaldatum_tekst = f"vóór {d.vervaldatum} " if d.vervaldatum else ""
-    factuurnr_tekst = f", onder vermelding van {d.factuurnummer}" if d.factuurnummer else ""
+    factuurnr_tekst = f", onder vermelding van de omschrijving {d.factuurnummer}" if d.factuurnummer else ""
     run = p.add_run(
-        f"Wij verzoeken u vriendelijk het bovenstaande bedrag van {_money(eindtotaal)} {vervaldatum_tekst}"
-        f"over te maken naar bovenstaand rekeningnummer{factuurnr_tekst}. "
-        "Voor vragen kunt u contact opnemen via info@ReFurnity.nl."
+        f"We verzoeken u vriendelijk het bovenstaande bedrag van {_money(eindtotaal)} {vervaldatum_tekst}"
+        f"te voldoen op onze bankrekening{factuurnr_tekst}. "
+        "Voor vragen kunt u contact opnemen per e-mail via Facturatie@ReFurnity.nl"
     )
     _set_font(run, size=9, color="555555")
 
@@ -1147,23 +1283,11 @@ def build_xlsx(data: GenerateRequest) -> bytes:
             ws.cell(row=row, column=col).fill = PatternFill("solid", fgColor=XTOTAL_FILL)
         row += 1
 
-    if doc_type == "offerte" and data.aanbetaling_termijnen:
+    if doc_type in ("offerte", "orderbevestiging"):
         row += 1
-        c = ws.cell(row=row, column=1, value="Betaaltermijnen")
-        c.font = XFont(name=XFONT_NAME, size=11, bold=True)
-        row += 1
-        termijnen = data.aanbetaling_termijnen
-        term_rows = []
-        for idx, termijn in enumerate(termijnen):
-            ws.cell(row=row, column=1, value=f"{termijn.label} ({termijn.percentage:g}%)").font = XFont(name=XFONT_NAME, size=10)
-            if idx == len(termijnen) - 1 and term_rows:
-                refs = "+".join(f"B{r}" for r in term_rows)
-                c = ws.cell(row=row, column=2, value=f"=E{eind_row}-({refs})")
-            else:
-                c = ws.cell(row=row, column=2, value=f"=E{eind_row}*{termijn.percentage / 100}")
-            c.font = XFont(name=XFONT_NAME, size=10)
-            c.number_format = '€ #,##0.00'
-            term_rows.append(row)
+        for i, regel in enumerate(FACTURATIESCHEMA_REGELS):
+            c = ws.cell(row=row, column=1, value=regel)
+            c.font = XFont(name=XFONT_NAME, size=10, bold=(i == 0))
             row += 1
 
     # Let op: algemene_opmerkingen worden bewust NIET in het gegenereerde
