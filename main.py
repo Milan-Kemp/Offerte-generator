@@ -857,6 +857,16 @@ def _build_factuur_item_table(doc, data: GenerateRequest) -> float:
             run = par.add_run(regel.omschrijving)
             _set_font(run)
 
+        if regel.foto_base64:
+            try:
+                foto_bytes = base64.b64decode(regel.foto_base64)
+                foto_bytes = _verwerk_foto_bytes(foto_bytes, item_naam=regel.item)
+                fp = cell0.add_paragraph()
+                frun = fp.add_run()
+                frun.add_picture(_io.BytesIO(foto_bytes), width=Cm(2.8))
+            except Exception as e:
+                print(f"[foto-fout] Kon foto voor '{regel.item}' niet in het Word-document plaatsen: {type(e).__name__}: {e}")
+
         weergave_prijs, weergave_totaal = _pas_toeslag_korting_toe_op_regel(regel, data)
 
         p = row.cells[1].paragraphs[0]
