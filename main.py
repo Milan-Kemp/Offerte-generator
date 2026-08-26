@@ -181,7 +181,6 @@ from docx.enum.table import WD_ALIGN_VERTICAL
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from PIL import Image as PILImage
-import qrcode
 
 FONT_NAME = "Calibri"
 HEADER_BG = "2F5233"
@@ -301,8 +300,10 @@ class GenerateRequest(BaseModel):
     algemene_opmerkingen: Optional[List[str]] = []
     klant: Optional[Klant] = None
     template: Optional[str] = "1"
-    toeslag_percentage: Optional[float] = None  # bijv. 20 voor 20% opslag op het leveranciersbedrag
-    korting_percentage: Optional[float] = None  # bijv. 10 voor 10% korting, altijd zichtbaar voor de klant
+    toeslag_percentage: Optional[float] = None  # bijv. 20 voor 20% opslag op het leveranciersbedrag - onzichtbaar verwerkt per regel
+    korting_percentage: Optional[float] = None  # bijv. 10 voor 10% korting - onzichtbaar verwerkt per regel
+    transport_montage_percentage: Optional[float] = None  # bijv. 5 voor 5% - WEL zichtbaar als eigen regel op het document
+    transport_montage_bedrag: Optional[float] = None  # vast bedrag i.p.v. percentage - WEL zichtbaar als eigen regel. Als beide gezet zijn, telt bedrag als extra bovenop het percentage.
     btw_percentage: Optional[float] = 21  # standaard 21%, zet expliciet op 0 om BTW-regel weg te laten
     aanbetaling_termijnen: Optional[List[AanbetalingTermijn]] = None
     document_type: Optional[str] = "offerte"  # "offerte" | "orderbevestiging" | "factuur"
@@ -459,6 +460,26 @@ def _fill_info_cell(cell, pairs):
         cell.paragraphs[0].add_run("")
 
 
+def _bereken_transport_montage(data: "GenerateRequest", basis_bedrag: float) -> float:
+    """Transport & montage is, in tegenstelling tot toeslag/korting, WEL zichtbaar
+    als eigen regel op het document. Percentage werkt over het totaal excl. BTW
+    (na toeslag/korting); bedrag is een vast extra bedrag. Beide gezet = opgeteld."""
+    bedrag = 0.0
+    if data.transport_montage_percentage:
+        bedrag += basis_bedrag * (data.transport_montage_percentage / 100)
+    if data.transport_montage_bedrag:
+        bedrag += data.transport_montage_bedrag
+    return round(bedrag, 2)
+
+
+def _transport_montage_label(data: "GenerateRequest") -> str:
+    if data.transport_montage_percentage and data.transport_montage_bedrag:
+        return f"Transport en montage ({data.transport_montage_percentage:g}% + vast bedrag)"
+    if data.transport_montage_percentage:
+        return f"Transport en montage ({data.transport_montage_percentage:g}%)"
+    return "Transport en montage"
+
+
 def _pas_toeslag_korting_toe_op_regel(regel: "Regel", data: "GenerateRequest"):
     """Rekent toeslag/korting stilzwijgend door in de per-regel prijs, zodat
     de zichtbare regels samen exact optellen tot het eindtotaal - zonder dat
@@ -596,15 +617,23 @@ def _build_item_table_and_totals(doc, data: GenerateRequest, toon_details: bool 
     # is meteen het totaal excl. BTW - geen aparte toeslag/korting-optelling
     # meer nodig.
     totaal_excl_btw = grand_total
+    transport_montage_bedrag = _bereken_transport_montage(data, totaal_excl_btw)
+    if transport_montage_bedrag:
+        totaal_excl_btw += transport_montage_bedrag
 
     heeft_btw = bool(data.btw_percentage)
     # Toeslag/korting worden nergens als aparte regel getoond - alleen
-    # stilzwijgend per regel verwerkt in de getoonde prijs. Bewuste keuze, geen bug.
+    # stilzwijgend per regel verwerkt in de getoonde prijs. Transport & montage
+    # is de uitzondering en wordt WEL als eigen regel getoond. Bewuste keuze, geen bug.
 
     if not heeft_btw:
+        if transport_montage_bedrag:
+            _add_summary_row(_transport_montage_label(data), transport_montage_bedrag, bold=False)
         _add_summary_row("TOTAAL", totaal_excl_btw, shade_bg=TOTAL_BG)
         eindtotaal = totaal_excl_btw
     else:
+        if transport_montage_bedrag:
+            _add_summary_row(_transport_montage_label(data), transport_montage_bedrag, bold=False)
         _add_summary_row("Totaal excl. BTW", totaal_excl_btw, bold=False)
         btw_bedrag = totaal_excl_btw * (data.btw_percentage / 100)
         _add_summary_row(f"BTW ({data.btw_percentage:g}%)", btw_bedrag, bold=False)
@@ -903,43 +932,23 @@ def _build_factuur_item_table(doc, data: GenerateRequest) -> float:
 
     subtotaal = grand_total
     _add_summary_row("Subtotaal", subtotaal, bold=False)
+
+    transport_montage_bedrag = _bereken_transport_montage(data, subtotaal)
+    basis_voor_btw = subtotaal
+    if transport_montage_bedrag:
+        _add_summary_row(_transport_montage_label(data), transport_montage_bedrag, bold=False)
+        basis_voor_btw += transport_montage_bedrag
+
     if btw_percentage:
-        btw_bedrag = subtotaal * (btw_percentage / 100)
-        eindtotaal = subtotaal + btw_bedrag
+        btw_bedrag = basis_voor_btw * (btw_percentage / 100)
+        eindtotaal = basis_voor_btw + btw_bedrag
         _add_summary_row(f"{btw_percentage:g}% btw", btw_bedrag, bold=False)
         _add_summary_row("Totaal", eindtotaal, shade_bg=TOTAL_BG)
     else:
-        eindtotaal = subtotaal
+        eindtotaal = basis_voor_btw
         _add_summary_row("Totaal", eindtotaal, shade_bg=TOTAL_BG)
 
     return eindtotaal
-
-
-def _build_epc_qr_bytes(bedrag: float, referentie: str) -> bytes:
-    """Genereert een EPC-QR-code (SEPA Credit Transfer, standaard EPC069-12).
-    Volledig gratis en lokaal - geen externe dienst, geen API-key nodig."""
-    iban_zonder_spaties = REFURNITY_BANK.replace(" ", "")
-    regels = [
-        "BCD",
-        "002",
-        "1",
-        "SCT",
-        REFURNITY_BIC,
-        REFURNITY_NAAM,
-        iban_zonder_spaties,
-        f"EUR{bedrag:.2f}",
-        "",
-        "",
-        (referentie or "")[:140],
-    ]
-    data = "\n".join(regels)
-    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=8, border=2)
-    qr.add_data(data)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-    buf = _io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
 
 
 def _build_factuur(doc, data: GenerateRequest):
@@ -1029,42 +1038,15 @@ def _build_factuur(doc, data: GenerateRequest):
     eindtotaal = _build_factuur_item_table(doc, data)
 
     doc.add_paragraph()
-    close = doc.add_table(rows=1, cols=2)
-    close.autofit = False
-    close.columns[0].width = Cm(11)
-    close.columns[1].width = Cm(5)
-    _row_cant_split(close.rows[0])
-    tekst_cell, qr_cell = close.rows[0].cells
-
-    tekst_cell.paragraphs[0].text = ""
+    p = doc.add_paragraph()
     vervaldatum_tekst = f"vóór {d.vervaldatum} " if d.vervaldatum else ""
     factuurnr_tekst = f", onder vermelding van de omschrijving {d.factuurnummer}" if d.factuurnummer else ""
-    run = tekst_cell.paragraphs[0].add_run(
+    run = p.add_run(
         f"We verzoeken u vriendelijk het bovenstaande bedrag van {_money(eindtotaal)} {vervaldatum_tekst}"
         f"te voldoen op onze bankrekening{factuurnr_tekst}. "
         "Voor vragen kunt u contact opnemen per e-mail via Facturatie@ReFurnity.nl"
     )
     _set_font(run, size=9, color="555555")
-
-    qr_cell.paragraphs[0].text = ""
-    qr_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
-    try:
-        qr_bytes = _build_epc_qr_bytes(eindtotaal, d.factuurnummer or d.referentie or "")
-        kop = qr_cell.paragraphs[0]
-        run = kop.add_run("Betaal QR-code")
-        _set_font(run, size=9, bold=True)
-        sub = qr_cell.add_paragraph()
-        run = sub.add_run(
-            "Scan met een bankieren-app om de overboeking te starten. "
-            "Let op: niet alle banken ondersteunen de EPC QR"
-        )
-        _set_font(run, size=7, color="777777")
-        img_p = qr_cell.add_paragraph()
-        img_run = img_p.add_run()
-        img_run.add_picture(_io.BytesIO(qr_bytes), width=Cm(2.4))
-    except Exception as e:
-        print(f"[qr-fout] Kon geen betaal-QR genereren: {type(e).__name__}: {e}")
-    _tbl_no_borders(close)
 
 
 def build_docx_template_1(data: GenerateRequest) -> bytes:
@@ -1314,12 +1296,41 @@ def build_xlsx(data: GenerateRequest) -> bytes:
     c.font = XFont(name=XFONT_NAME, size=10, bold=True)
     c.number_format = '€ #,##0.00'
     row += 1
-    basis_row = subtotaal_row
 
-    # Toeslag/korting zitten al stilzwijgend verwerkt in de prijs per regel
-    # (zie _pas_toeslag_korting_toe_op_regel), dus hier alleen het label zetten.
-    label_cell = ws.cell(row=basis_row, column=4)
-    label_cell.value = "Totaal excl. BTW" if data.btw_percentage else "TOTAAL"
+    # Transport & montage is, in tegenstelling tot toeslag/korting, WEL zichtbaar
+    # als eigen regel - percentage over het subtotaal, plus eventueel een vast bedrag.
+    heeft_transport_montage = bool(data.transport_montage_percentage or data.transport_montage_bedrag)
+    tm_row = None
+    if heeft_transport_montage:
+        tm_row = row
+        ws.cell(row=row, column=4, value=_transport_montage_label(data)).alignment = Alignment(horizontal="right")
+        ws.cell(row=row, column=4).font = XFont(name=XFONT_NAME, size=10)
+        formule_delen = []
+        if data.transport_montage_percentage:
+            formule_delen.append(f"E{subtotaal_row}*{data.transport_montage_percentage / 100}")
+        if data.transport_montage_bedrag:
+            formule_delen.append(str(data.transport_montage_bedrag))
+        c = ws.cell(row=row, column=5, value="=" + "+".join(formule_delen))
+        c.font = XFont(name=XFONT_NAME, size=10)
+        c.number_format = '€ #,##0.00'
+        row += 1
+
+    # basis_row wijst naar de regel die het "totaal excl. BTW" bevat waarover
+    # BTW berekend wordt. Zonder transport&montage is dat gewoon het subtotaal
+    # (Toeslag/korting zitten daar al stilzwijgend in verwerkt); mét transport&montage
+    # komt er een aparte optelregel bij zodat de Subtotaal-regel zijn eigen naam mag houden.
+    if heeft_transport_montage:
+        basis_row = row
+        ws.cell(row=row, column=4, value="Totaal excl. BTW" if data.btw_percentage else "TOTAAL").alignment = Alignment(horizontal="right")
+        ws.cell(row=row, column=4).font = XFont(name=XFONT_NAME, size=10)
+        c = ws.cell(row=row, column=5, value=f"=E{subtotaal_row}+E{tm_row}")
+        c.font = XFont(name=XFONT_NAME, size=10)
+        c.number_format = '€ #,##0.00'
+        row += 1
+    else:
+        basis_row = subtotaal_row
+        label_cell = ws.cell(row=basis_row, column=4)
+        label_cell.value = "Totaal excl. BTW" if data.btw_percentage else "TOTAAL"
 
     if data.btw_percentage:
         btw_row = row
